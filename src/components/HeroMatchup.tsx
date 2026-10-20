@@ -334,7 +334,7 @@ export const HeroMatchup: React.FC<HeroMatchupProps> = memo(({ event }) => {
                     scorigamiInfo.isCurrentScorigami ? 'text-violet-400 animate-pulse' : 'text-slate-500'
                   }`}
                 />
-                {scorigamiInfo.isCurrentScorigami ? '✨ Live NBA Scorigami in Progress' : 'NBA Scorigami Probability'}
+                {scorigamiInfo.isCurrentScorigami ? '✨ Live NBA Scorigami in Progress' : isFinal ? 'NBA Scorigami Status' : 'NBA Scorigami Probability'}
               </span>
               <span
                 className={`font-mono font-bold text-xs tabular-nums px-2 py-0.5 rounded ${

@@ -48,7 +48,13 @@ export function hasOccurred(a: unknown, b: unknown): boolean {
 export function getHistoricalRecord(a: unknown, b: unknown): HistoricalScoreRecord | null {
   const key = makeScoreKey(a, b)
   if (Object.prototype.hasOwnProperty.call(HISTORICAL_OCCURRED, key)) {
-    return HISTORICAL_OCCURRED[key] ?? null
+    const entry = HISTORICAL_OCCURRED[key]
+    if (Array.isArray(entry)) {
+      return entry
+    }
+    if (typeof entry === 'number') {
+      return [entry, 0, '', '', '']
+    }
   }
   return null
 }
@@ -108,25 +114,39 @@ export function getScorigamiInfo(
 
   // 1. POST GAME: Definitive Historical Status
   if (gameState === 'post') {
-    const occurrences = histRecord ? histRecord[0] : 0
-    const lastYear = histRecord ? histRecord[1] : null
-    const lastDate = histRecord ? formatHistoricalDate(histRecord[2]) : null
-    const lastWinner = histRecord ? histRecord[3] : null
-    const lastLoser = histRecord ? histRecord[4] : null
-    const lastGameSummary = histRecord
-      ? `${lastWinner} ${key.split('-')[0]}, ${lastLoser} ${key.split('-')[1]} on ${lastDate}`
+    const totalOccurrences = histRecord ? histRecord[0] : 0
+    const priorOccurrences = Math.max(0, totalOccurrences > 0 ? totalOccurrences - 1 : 0)
+    const lastYear = histRecord && histRecord[1] ? histRecord[1] : null
+    const lastDate = histRecord && histRecord[2] ? formatHistoricalDate(histRecord[2]) : null
+    const lastWinner = histRecord && histRecord[3] ? histRecord[3] : null
+    const lastLoser = histRecord && histRecord[4] ? histRecord[4] : null
+    const lastGameSummary = (lastWinner && lastLoser && lastDate)
+      ? `${lastWinner} vs ${lastLoser} on ${lastDate}`
       : null
+
+    let whenScenario = ''
+    let chanceLabel = ''
+
+    if (isCurrentScorigami) {
+      chanceLabel = '100% — Historical NBA Scorigami! ✨'
+      whenScenario = `Final: Official NBA Scorigami! Novel score #${TOTAL_UNIQUE_NBA_SCORIGAMIS + 1} in NBA history.`
+    } else {
+      chanceLabel = priorOccurrences > 0
+        ? `No Scorigami (Happened ${priorOccurrences}x before)`
+        : `No Scorigami (${totalOccurrences}x in NBA history)`
+      whenScenario = (lastWinner && lastLoser && lastDate)
+        ? `Final: No Scorigami. This score has happened ${priorOccurrences} times before, most recently on ${lastDate} (${lastWinner} vs ${lastLoser}).`
+        : `Final: No Scorigami. This score has happened ${totalOccurrences} times in NBA history.`
+    }
 
     result = {
       isCurrentScorigami,
-      chanceLabel: isCurrentScorigami ? '100% — Historical NBA Scorigami! ✨' : '0% — Already Occurred',
+      chanceLabel,
       chancePct: isCurrentScorigami ? 1 : 0,
       mostLikelyNovel: isCurrentScorigami ? key : null,
       mostLikelyLabel: isCurrentScorigami ? `${key} ✨` : key,
-      whenScenario: isCurrentScorigami
-        ? `Final: Novel score #${TOTAL_UNIQUE_NBA_SCORIGAMIS + 1} in NBA history!`
-        : `Final: Has occurred ${occurrences}x in NBA history (last: ${lastGameSummary || 'prior era'})`,
-      currentOccurrences: occurrences,
+      whenScenario,
+      currentOccurrences: totalOccurrences,
       lastSeenYear: lastYear,
       lastDate,
       lastWinner,
@@ -215,12 +235,12 @@ export function getScorigamiInfo(
     }
 
     const occurrences = histRecord ? histRecord[0] : 0
-    const lastYear = histRecord ? histRecord[1] : null
-    const lastDate = histRecord ? formatHistoricalDate(histRecord[2]) : null
-    const lastWinner = histRecord ? histRecord[3] : null
-    const lastLoser = histRecord ? histRecord[4] : null
-    const lastGameSummary = histRecord
-      ? `${lastWinner} ${key.split('-')[0]}, ${lastLoser} ${key.split('-')[1]} on ${lastDate}`
+    const lastYear = histRecord && histRecord[1] ? histRecord[1] : null
+    const lastDate = histRecord && histRecord[2] ? formatHistoricalDate(histRecord[2]) : null
+    const lastWinner = histRecord && histRecord[3] ? histRecord[3] : null
+    const lastLoser = histRecord && histRecord[4] ? histRecord[4] : null
+    const lastGameSummary = (lastWinner && lastLoser && lastDate)
+      ? `${lastWinner} vs ${lastLoser} on ${lastDate}`
       : null
 
     result = {

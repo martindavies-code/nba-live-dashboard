@@ -31,7 +31,9 @@ test('hasOccurred correctly detects known historic NBA scores and is prototype-s
   // Novel scores
   assert.equal(hasOccurred(153, 129), false)
   assert.equal(hasOccurred(147, 133), false)
-  assert.equal(hasOccurred(139, 119), false)
+  assert.equal(hasOccurred(167, 151), false)
+  assert.equal(hasOccurred(195, 180), false)
+  assert.equal(hasOccurred(121, 113), true)
 
   // Prototype key collision safety
   assert.equal(hasOccurred('toString', 'valueOf'), false)
@@ -64,12 +66,25 @@ test('formatHistoricalDate safely formats dates and handles malformed strings', 
   assert.equal(formatHistoricalDate('invalid-date'), 'invalid-date')
 })
 
+test('getScorigamiInfo accurately handles Pistons 121 - 113 Celtics as 68x prior non-Scorigami', () => {
+  const info = getScorigamiInfo(121, 113, 0, 'post', 'DET', 'BOS')
+  assert.equal(info.isCurrentScorigami, false)
+  assert.equal(info.chancePct, 0)
+  assert.equal(info.currentOccurrences, 69)
+  assert.equal(info.chanceLabel, 'No Scorigami (Happened 68x before)')
+  assert.match(info.whenScenario, /Final: No Scorigami. This score has happened 68 times before/)
+  assert.match(info.whenScenario, /Oklahoma City Thunder vs Cleveland Cavaliers/)
+  assert.match(info.whenScenario, /Feb 22, 2026/)
+  assert.equal(info.lastGameSummary, 'Oklahoma City Thunder vs Cleveland Cavaliers on Feb 22, 2026')
+})
+
 test('getScorigamiInfo for post-game occurred score returns historical record', () => {
   const info = getScorigamiInfo(108, 102, 0, 'post', 'MIN', 'DEN')
   assert.equal(info.isCurrentScorigami, false)
   assert.equal(info.chancePct, 0)
   assert.equal(info.currentOccurrences > 0, true)
-  assert.match(info.whenScenario, /Final: Has occurred/)
+  assert.match(info.chanceLabel, /No Scorigami/)
+  assert.match(info.whenScenario, /Final: No Scorigami/)
   assert.equal(info.pointsNeededHome, 0)
   assert.equal(info.pointsNeededAway, 0)
 })
@@ -79,7 +94,7 @@ test('getScorigamiInfo for post-game novel score announces Scorigami', () => {
   assert.equal(info.isCurrentScorigami, true)
   assert.equal(info.chancePct, 1)
   assert.match(info.chanceLabel, /100% — Historical NBA Scorigami!/)
-  assert.match(info.whenScenario, /Final: Novel score #/)
+  assert.match(info.whenScenario, /Final: Official NBA Scorigami!/)
 })
 
 test('getScorigamiInfo for pre-game returns projected novelty baseline', () => {

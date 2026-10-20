@@ -185,8 +185,10 @@ export const GameCard: React.FC<GameCardProps> = memo(({
         {/* Scorigami Chance & Announcers Info */}
         <div className="flex items-center justify-between text-[11px] text-slate-400 pt-1">
           <span className="flex items-center gap-1 font-mono">
-            <Sparkles className="h-3 w-3 text-violet-400" />
-            <strong className="text-violet-300">{scorigamiInfo.chanceLabel}</strong>
+            <Sparkles className={`h-3 w-3 ${scorigamiInfo.isCurrentScorigami ? 'text-violet-400' : 'text-slate-500'}`} />
+            <strong className={scorigamiInfo.isCurrentScorigami ? 'text-violet-300' : 'text-slate-400'}>
+              {scorigamiInfo.chanceLabel}
+            </strong>
           </span>
 
           {crew?.playByPlay && (
