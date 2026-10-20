@@ -38,7 +38,15 @@ const AutoRefreshTicker: React.FC<AutoRefreshTickerProps> = memo(({
   onRefreshTrigger,
 }) => {
   const [secondsLeft, setSecondsLeft] = useState<number>(10)
+  const [prevIsRefreshing, setPrevIsRefreshing] = useState<boolean>(isRefreshing)
   const triggerRef = useRef(onRefreshTrigger)
+
+  if (isRefreshing !== prevIsRefreshing) {
+    setPrevIsRefreshing(isRefreshing)
+    if (isRefreshing) {
+      setSecondsLeft(10)
+    }
+  }
 
   useEffect(() => {
     triggerRef.current = onRefreshTrigger
@@ -59,13 +67,6 @@ const AutoRefreshTicker: React.FC<AutoRefreshTickerProps> = memo(({
 
     return () => clearInterval(interval)
   }, [isPaused])
-
-  // Reset countdown when manual refresh triggers
-  useEffect(() => {
-    if (isRefreshing) {
-      setSecondsLeft(10)
-    }
-  }, [isRefreshing])
 
   return (
     <div
@@ -316,9 +317,9 @@ export const Dashboard: React.FC = () => {
       if (!id) return
       setSelectedHeroId(id)
       if (name) setSrAnnouncement(`Spotlighted ${name}`)
-      if (!isMuted) playTactileClick()
+      if (!isMutedRef.current) playTactileClick()
     },
-    [isMuted]
+    []
   )
 
   const isTickerPaused = (typeof document !== 'undefined' && document.hidden) || isShortcutsOpen
@@ -382,7 +383,7 @@ export const Dashboard: React.FC = () => {
           <div className="order-3 lg:order-2 w-full lg:w-auto flex justify-center sm:justify-start lg:justify-center">
             <DateSelector
               selectedDate={selectedDate}
-              onDateChange={(d) => setSelectedDate(d)}
+              onDateChange={setSelectedDate}
               onQuickSelect={handleQuickDateSelect}
             />
           </div>
@@ -393,7 +394,7 @@ export const Dashboard: React.FC = () => {
             <AutoRefreshTicker
               isPaused={isTickerPaused}
               isRefreshing={isRefreshing}
-              onRefreshTrigger={() => loadData(false)}
+              onRefreshTrigger={handleAutoRefresh}
             />
 
             {/* Manual Refresh */}
@@ -500,7 +501,7 @@ export const Dashboard: React.FC = () => {
           <>
             {/* Spotlight Hero Matchup */}
             {heroEvent ? (
-              <HeroMatchup event={heroEvent} onSelectGame={(id) => setSelectedHeroId(id)} />
+              <HeroMatchup event={heroEvent} onSelectGame={setSelectedHeroId} />
             ) : (
               <div className="rounded-2xl border border-white/[0.08] bg-[#090f1d] p-12 text-center text-slate-400">
                 No matchups found matching the active filter.
@@ -540,10 +541,14 @@ export const Dashboard: React.FC = () => {
       </main>
 
       {/* Modals */}
-      <KeyboardShortcutsModal
-        isOpen={isShortcutsOpen}
-        onClose={() => setIsShortcutsOpen(false)}
-      />
+      {isShortcutsOpen && (
+        <React.Suspense fallback={null}>
+          <KeyboardShortcutsModal
+            isOpen={isShortcutsOpen}
+            onClose={() => setIsShortcutsOpen(false)}
+          />
+        </React.Suspense>
+      )}
 
       {/* Footer */}
       <footer className="border-t border-white/[0.08] bg-[#070b14] py-6 text-center text-xs text-slate-500 space-y-1">

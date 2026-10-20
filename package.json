@@ -8,6 +8,7 @@
     "build": "tsc -b && vite build",
     "lint": "oxlint",
     "test": "node --test --experimental-strip-types src/**/*.test.mjs",
+    "verify:announcers": "node --test --experimental-strip-types src/utils/announcers.test.mjs",
     "preview": "vite preview"
   },
   "dependencies": {

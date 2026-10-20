@@ -4,6 +4,7 @@ import {
   resolveAnnouncingCrew,
   formatCrewShortLabel,
   normalizeTeamAbbr,
+  verifyDailyAnnouncers,
 } from './announcers.ts'
 
 test('resolveAnnouncingCrew matches all major national broadcast networks', () => {
@@ -150,10 +151,40 @@ test('resolveAnnouncingCrew falls back to away team RSN or default crew', () => 
   assert.equal(awayFallback.network, 'NBC Sports Boston')
   assert.equal(awayFallback.market, 'Away Regional')
 
-  // Default fallback when both teams unknown
+  // Default fallback when both teams unknown: must say TBA rather than guessing
   const defaultCrew = resolveAnnouncingCrew({ broadcasts: [] }, 'AAA', 'BBB')
   assert.equal(defaultCrew.market, 'Regional / League Pass')
-  assert.equal(defaultCrew.playByPlay, 'Broadcast Team')
+  assert.equal(defaultCrew.playByPlay, 'TBA')
+  assert.equal(defaultCrew.colorAnalyst, 'Booth assignment TBA')
+  assert.equal(formatCrewShortLabel(defaultCrew.playByPlay, defaultCrew.colorAnalyst), 'TBA')
+})
+
+test('resolveAnnouncingCrew strictly returns TBA when all network crews are booked (no guessing)', () => {
+  const assignedCrews = new Set(['Mike Tirico', 'Noah Eagle', 'Terry Gannon', 'Michael Grady'])
+  // 5th NBC game when all 4 NBC crews are already booked on the same date
+  const overbooked = resolveAnnouncingCrew(
+    { broadcasts: [{ market: 'National', names: ['NBC'] }] },
+    'DET',
+    'BOS',
+    { gameDate: '2026-10-20T20:00Z', assignedCrews }
+  )
+  assert.equal(overbooked.playByPlay, 'TBA')
+  assert.equal(overbooked.colorAnalyst, 'Booth assignment TBA')
+  assert.equal(formatCrewShortLabel(overbooked.playByPlay, overbooked.colorAnalyst), 'TBA')
+})
+
+test('verifyDailyAnnouncers provides daily audit of confirmed vs TBA booths', () => {
+  const report = verifyDailyAnnouncers([
+    { homeTeam: 'DET', awayTeam: 'BOS', network: 'NBC', date: '2026-10-20T19:00Z' },
+    { homeTeam: 'NYK', awayTeam: 'PHI', network: 'NBC', date: '2026-10-20T23:00Z' },
+    { homeTeam: 'SAS', awayTeam: 'OKC', network: 'NBC', date: '2026-10-21T01:30Z' },
+    { homeTeam: 'ZZZ', awayTeam: 'YYY', network: 'ESPN' }, // Unknown teams
+  ])
+
+  assert.equal(report.verifiedCount, 3)
+  assert.equal(report.tbaCount, 1)
+  assert.equal(report.details[0].status, 'confirmed')
+  assert.equal(report.details[3].status, 'tba')
 })
 
 test('resolveAnnouncingCrew extracts officiating crew or generates stable pseudo-hash', () => {

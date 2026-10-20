@@ -461,8 +461,8 @@ export const MOCK_NBA_EVENTS: NBAEvent[] = [
         announcingCrew: {
           network: 'NBC Sports',
           market: 'National',
-          playByPlay: 'Noah Eagle',
-          colorAnalyst: 'Reggie Miller & Jamal Crawford',
+          playByPlay: 'Terry Gannon',
+          colorAnalyst: 'Brad Daugherty & Robbie Hummel',
           sidelineReporter: 'Zora Stephenson',
           radioNetwork: '98.5 The Sports Hub (BOS) / 97.1 The Ticket (DET)',
           officials: [
