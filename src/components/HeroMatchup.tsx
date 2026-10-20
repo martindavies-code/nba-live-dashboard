@@ -1,9 +1,15 @@
-import React, { useState } from 'react'
-import type { NBAEvent, NBACompetitor } from '../types/nba'
+import React, { useState, memo } from 'react'
+import type { NBAEvent } from '../types/nba'
 import { CourtDiagram } from './CourtDiagram'
 import { WinProbabilityBar } from './WinProbabilityBar'
 import { getScorigamiInfo } from '../utils/scorigami'
-import { safeParseInt, isClutchGame } from '../utils/nbaHelpers'
+import {
+  safeParseInt,
+  isClutchGame,
+  calculateSecondsRemaining,
+  calculateWinProbability,
+  sanitizeImageUrl,
+} from '../utils/nbaHelpers'
 import {
   Tv,
   Mic,
@@ -11,7 +17,6 @@ import {
   Sparkles,
   Share2,
   Check,
-  Flame,
   Radio,
   Users,
   ShieldAlert,
@@ -22,7 +27,7 @@ interface HeroMatchupProps {
   onSelectGame?: (id: string) => void
 }
 
-export const HeroMatchup: React.FC<HeroMatchupProps> = ({ event }) => {
+export const HeroMatchup: React.FC<HeroMatchupProps> = memo(({ event }) => {
   const [isCopied, setIsCopied] = useState<boolean>(false)
   const competition = event.competitions[0]
   if (!competition) return null
@@ -43,14 +48,7 @@ export const HeroMatchup: React.FC<HeroMatchupProps> = ({ event }) => {
     ? `${competition.venue.fullName}${competition.venue.address?.city ? `, ${competition.venue.address.city}` : ''}`
     : ''
 
-  // Scorigami derivation
-  // In NBA: status.clock gives seconds remaining in current period (12 mins = 720s)
-  // Derive regulation total seconds remaining:
-  let secondsRemaining = status.clock || 0
-  if (status.period < 4) {
-    secondsRemaining += (4 - status.period) * 720
-  }
-
+  const secondsRemaining = calculateSecondsRemaining(status)
   const homeScore = safeParseInt(homeComp?.score, 0)
   const awayScore = safeParseInt(awayComp?.score, 0)
   const homeAbbr = homeComp?.team?.abbreviation || 'Home'
@@ -64,6 +62,9 @@ export const HeroMatchup: React.FC<HeroMatchupProps> = ({ event }) => {
     homeAbbr,
     awayAbbr
   )
+
+  const spread = competition.odds?.[0]?.spread ?? 0
+  const winProb = calculateWinProbability(homeScore, awayScore, secondsRemaining, state, spread)
 
   const handleCopySnapshot = async () => {
     const awayName = awayComp?.team?.displayName || awayAbbr
@@ -151,7 +152,7 @@ export const HeroMatchup: React.FC<HeroMatchupProps> = ({ event }) => {
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-3.5">
                 <img
-                  src={awayComp?.team?.logo || 'https://a.espncdn.com/i/teamlogos/nba/500/nba.png'}
+                  src={sanitizeImageUrl(awayComp?.team?.logo)}
                   alt={awayComp?.team?.displayName || 'Away'}
                   className="h-12 w-12 object-contain drop-shadow-md"
                   loading="lazy"
@@ -184,7 +185,7 @@ export const HeroMatchup: React.FC<HeroMatchupProps> = ({ event }) => {
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-3.5">
                 <img
-                  src={homeComp?.team?.logo || 'https://a.espncdn.com/i/teamlogos/nba/500/nba.png'}
+                  src={sanitizeImageUrl(homeComp?.team?.logo)}
                   alt={homeComp?.team?.displayName || 'Home'}
                   className="h-12 w-12 object-contain drop-shadow-md"
                   loading="lazy"
@@ -260,7 +261,8 @@ export const HeroMatchup: React.FC<HeroMatchupProps> = ({ event }) => {
 
           {/* Win Probability Bar */}
           <WinProbabilityBar
-            homeWinPercentage={situation?.lastPlay?.team?.id === homeComp?.team?.id ? 0.62 : 0.38}
+            homeWinPercentage={winProb.homePct / 100}
+            awayWinPercentage={winProb.awayPct / 100}
             homeCompetitor={homeComp}
             awayCompetitor={awayComp}
             gameState={state}
@@ -388,4 +390,4 @@ export const HeroMatchup: React.FC<HeroMatchupProps> = ({ event }) => {
       </div>
     </section>
   )
-}
+})

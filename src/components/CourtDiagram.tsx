@@ -1,7 +1,7 @@
-import React, { useState, useId, memo } from 'react'
+import React, { useState, useId, memo, useMemo } from 'react'
 import type { NBACompetitor, NBAShot, NBASituation, NBAStatus } from '../types/nba'
 import { sanitizeHexColor } from '../utils/nbaHelpers'
-import { Flame, Clock, Award, Crosshair, BarChart2, ShieldAlert } from 'lucide-react'
+import { Flame, Clock, Crosshair, BarChart2, ShieldAlert } from 'lucide-react'
 
 interface CourtDiagramProps {
   situation?: NBASituation | null
@@ -35,21 +35,32 @@ export const CourtDiagram: React.FC<CourtDiagramProps> = memo(({
   const homeAbbr = homeComp?.team?.abbreviation || 'HOME'
   const awayAbbr = awayComp?.team?.abbreviation || 'AWAY'
 
-  // Filter shots
-  const filteredShots = shots.filter((s) => {
-    if (shotFilter === 'makes') return s.made
-    if (shotFilter === 'misses') return !s.made
-    if (shotFilter === 'home') return s.teamAbbr === homeAbbr
-    if (shotFilter === 'away') return s.teamAbbr === awayAbbr
-    return true
-  })
+  // Memoized filtered shots to prevent unnecessary recalculation
+  const filteredShots = useMemo(() => {
+    return shots.filter((s) => {
+      if (shotFilter === 'makes') return s.made
+      if (shotFilter === 'misses') return !s.made
+      if (shotFilter === 'home') return s.teamAbbr === homeAbbr
+      if (shotFilter === 'away') return s.teamAbbr === awayAbbr
+      return true
+    })
+  }, [shots, shotFilter, homeAbbr, awayAbbr])
 
-  // Calculate shooting summary
-  const totalShots = shots.length
-  const madeShots = shots.filter((s) => s.made).length
-  const fgPct = totalShots > 0 ? Math.round((madeShots / totalShots) * 100) : 0
-  const threePointersMade = shots.filter((s) => s.made && s.points === 3).length
-  const threePointersTotal = shots.filter((s) => s.points === 3).length
+  // Memoized shooting summary
+  const { totalShots, madeShots, fgPct, threePointersMade, threePointersTotal } = useMemo(() => {
+    const total = shots.length
+    const made = shots.filter((s) => s.made).length
+    const pct = total > 0 ? Math.round((made / total) * 100) : 0
+    const tpMade = shots.filter((s) => s.made && s.points === 3).length
+    const tpTotal = shots.filter((s) => s.points === 3).length
+    return {
+      totalShots: total,
+      madeShots: made,
+      fgPct: pct,
+      threePointersMade: tpMade,
+      threePointersTotal: tpTotal,
+    }
+  }, [shots])
 
   // Shot clock & fouls
   const shotClock = situation?.shotClock ?? 24
@@ -57,9 +68,10 @@ export const CourtDiagram: React.FC<CourtDiagramProps> = memo(({
   const awayFouls = situation?.awayFouls ?? awayComp?.fouls ?? 0
   const isClutch = situation?.isClutch || false
   const scoringRun = situation?.scoringRun
+  const currentPeriodDetail = status?.type?.detail || gameStatusDetail
 
   return (
-    <div className="flex flex-col space-y-3.5 w-full">
+    <div className={`flex flex-col space-y-3.5 w-full ${isHero ? 'hero-court-diagram' : ''}`}>
       {/* Top Hoops Momentum Banner (Hoops Drive Equivalent) */}
       <div className="flex flex-wrap items-center justify-between gap-2.5 rounded-xl border border-white/[0.08] bg-[#070b14]/90 p-3 shadow-md backdrop-blur-md">
         {/* Left: Possession & Scoring Run */}
@@ -77,7 +89,7 @@ export const CourtDiagram: React.FC<CourtDiagramProps> = memo(({
               }}
             />
             <span className="font-mono text-xs font-bold text-white tracking-wide">
-              {situation?.possessionText || (gameState === 'in' ? 'Live Play' : gameStatusDetail)}
+              {situation?.possessionText || (gameState === 'in' ? 'Live Play' : currentPeriodDetail)}
             </span>
           </div>
 
@@ -450,8 +462,8 @@ export const CourtDiagram: React.FC<CourtDiagramProps> = memo(({
             {viewMode === 'shots' &&
               filteredShots.map((shot) => {
                 // Scale coordinate to SVG viewBox (0..94 -> 0..940, 0..50 -> 0..500)
-                const cx = shot.x * 10
-                const cy = shot.y * 10
+                const cx = Math.max(0, Math.min(940, (Number.isFinite(shot.x) ? shot.x : 47) * 10))
+                const cy = Math.max(0, Math.min(500, (Number.isFinite(shot.y) ? shot.y : 25) * 10))
                 const isSelected = selectedShot?.id === shot.id
 
                 return (

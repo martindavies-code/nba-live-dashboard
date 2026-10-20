@@ -1,5 +1,6 @@
-import type { NBAScoreboardData, NBAEvent, NBAShot, NBAPlay } from '../types/nba'
-import { resolveAnnouncingCrew } from '../utils/announcers'
+import type { NBAScoreboardData, NBAEvent, NBAShot, NBACompetition } from '../types/nba'
+import { resolveAnnouncingCrew } from '../utils/announcers.ts'
+import { sanitizeImageUrl } from '../utils/nbaHelpers.ts'
 
 export const ESPN_NBA_SCOREBOARD_URL = 'https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard'
 export const ESPN_NBA_SUMMARY_URL = 'https://site.api.espn.com/apis/site/v2/sports/basketball/nba/summary'
@@ -13,17 +14,108 @@ export interface FetchNBAScoreboardResult {
   cachedTimestamp?: string
 }
 
-let cachedScoreboardData: NBAScoreboardData | null = null
-let cachedTimestamp: string | null = null
+interface CacheEntry {
+  data: NBAScoreboardData
+  timestamp: string
+  expiresAt: number
+}
+
+// Multi-date LRU Cache with TTL to eliminate redundant network queries
+const SCOREBOARD_CACHE = new Map<string, CacheEntry>()
+const MAX_CACHE_ENTRIES = 15
+
+/**
+ * Validates and sanitizes date string into YYYYMMDD format.
+ * Strictly accepts YYYY-MM-DD or YYYYMMDD.
+ */
+export function sanitizeDateParam(dateStr?: unknown): string | null {
+  if (typeof dateStr !== 'string') return null
+  const trimmed = dateStr.trim()
+  if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) {
+    return trimmed.replace(/-/g, '')
+  }
+  if (/^\d{8}$/.test(trimmed)) {
+    return trimmed
+  }
+  return null
+}
+
+/**
+ * Clears the scoreboard cache (used for cache invalidation & tests).
+ */
+export function clearScoreboardCache(): void {
+  SCOREBOARD_CACHE.clear()
+}
+
+/**
+ * Immutably enriches and sanitizes raw NBA events from external feed.
+ */
+function enrichEvents(rawEvents: unknown[]): NBAEvent[] {
+  if (!Array.isArray(rawEvents)) return []
+
+  const enriched: NBAEvent[] = []
+  for (const raw of rawEvents) {
+    if (!raw || typeof raw !== 'object') continue
+    const ev = raw as NBAEvent
+
+    const competitions: NBACompetition[] = (Array.isArray(ev.competitions) ? ev.competitions : []).map((comp) => {
+      const homeComp = comp.competitors?.find((c) => c.homeAway === 'home')
+      const awayComp = comp.competitors?.find((c) => c.homeAway === 'away')
+
+      const sanitizedCompetitors = (comp.competitors || []).map((c) => ({
+        ...c,
+        team: {
+          ...c.team,
+          logo: sanitizeImageUrl(c.team?.logo),
+        },
+      }))
+
+      const crew = resolveAnnouncingCrew(
+        comp,
+        homeComp?.team?.abbreviation,
+        awayComp?.team?.abbreviation
+      )
+
+      return {
+        ...comp,
+        competitors: sanitizedCompetitors,
+        announcingCrew: crew,
+      }
+    })
+
+    enriched.push({
+      ...ev,
+      competitions,
+    })
+  }
+
+  return enriched
+}
 
 export async function fetchNBAScoreboard(
   dateStr?: string,
   signal?: AbortSignal
 ): Promise<FetchNBAScoreboardResult> {
   const startTime = performance.now()
+  const sanitizedDate = sanitizeDateParam(dateStr)
+  const cacheKey = sanitizedDate || 'today'
+
+  // 1. Check in-memory cache
+  const cached = SCOREBOARD_CACHE.get(cacheKey)
+  if (cached && Date.now() < cached.expiresAt) {
+    return {
+      data: cached.data,
+      sourceId: 'client-cache',
+      sourceName: 'Cached NBA Scoreboard Feed',
+      responseTimeMs: 0,
+      isCached: true,
+      cachedTimestamp: cached.timestamp,
+    }
+  }
+
   const url = new URL(ESPN_NBA_SCOREBOARD_URL)
-  if (dateStr) {
-    url.searchParams.set('dates', dateStr.replace(/-/g, ''))
+  if (sanitizedDate) {
+    url.searchParams.set('dates', sanitizedDate)
   }
 
   try {
@@ -39,29 +131,34 @@ export async function fetchNBAScoreboard(
     }
 
     const rawData = await response.json()
-    const enrichedEvents: NBAEvent[] = (rawData.events || []).map((ev: NBAEvent) => {
-      const comp = ev.competitions?.[0]
-      if (comp) {
-        const homeComp = comp.competitors?.find((c) => c.homeAway === 'home')
-        const awayComp = comp.competitors?.find((c) => c.homeAway === 'away')
-        const crew = resolveAnnouncingCrew(
-          comp,
-          homeComp?.team?.abbreviation,
-          awayComp?.team?.abbreviation
-        )
-        comp.announcingCrew = crew
-      }
-      return ev
-    })
+    if (!rawData || typeof rawData !== 'object') {
+      throw new Error('Invalid JSON response structure from ESPN NBA API')
+    }
+
+    const rawEvents = Array.isArray(rawData.events) ? rawData.events : []
+    const enriched = enrichEvents(rawEvents)
 
     const scoreboard: NBAScoreboardData = {
-      events: enrichedEvents.length > 0 ? enrichedEvents : MOCK_NBA_EVENTS,
+      events: enriched.length > 0 ? enriched : MOCK_NBA_EVENTS,
       day: rawData.day,
       season: rawData.season,
     }
 
-    cachedScoreboardData = scoreboard
-    cachedTimestamp = new Date().toISOString()
+    // TTL Policy: Live games refresh every 10s; completed/pre-game slates cache for 5 minutes
+    const hasLiveGames = scoreboard.events.some((e) => e.status?.type?.state === 'in')
+    const ttlMs = hasLiveGames ? 10_000 : 300_000
+
+    if (SCOREBOARD_CACHE.size >= MAX_CACHE_ENTRIES) {
+      const oldestKey = SCOREBOARD_CACHE.keys().next().value
+      if (oldestKey) SCOREBOARD_CACHE.delete(oldestKey)
+    }
+
+    const timestamp = new Date().toISOString()
+    SCOREBOARD_CACHE.set(cacheKey, {
+      data: scoreboard,
+      timestamp,
+      expiresAt: Date.now() + ttlMs,
+    })
 
     return {
       data: scoreboard,
@@ -76,15 +173,15 @@ export async function fetchNBAScoreboard(
       throw err
     }
 
-    // Fallback to cached or rich mock data
-    if (cachedScoreboardData) {
+    // Fallback to cached (even if expired) or rich mock data
+    if (cached) {
       return {
-        data: cachedScoreboardData,
-        sourceId: 'client-cache',
-        sourceName: 'Cached NBA Scoreboard View',
+        data: cached.data,
+        sourceId: 'client-cache-stale',
+        sourceName: 'Cached NBA Scoreboard View (Stale)',
         responseTimeMs: Math.round(performance.now() - startTime),
         isCached: true,
-        cachedTimestamp: cachedTimestamp || new Date().toISOString(),
+        cachedTimestamp: cached.timestamp,
       }
     }
 

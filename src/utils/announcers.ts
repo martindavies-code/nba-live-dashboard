@@ -360,17 +360,22 @@ export const NOTABLE_OFFICIALS: Array<{ name: string; role: string }> = [
  * Resolves the broadcast network, announcing crew, and officiating crew for an NBA competition.
  */
 export function resolveAnnouncingCrew(
-  competition?: Partial<NBACompetition>,
-  homeTeamAbbr = '',
-  awayTeamAbbr = ''
+  competition?: Partial<NBACompetition> | null,
+  homeTeamAbbr: unknown = '',
+  awayTeamAbbr: unknown = ''
 ): NBAAnnouncingCrew {
-  const broadcasts = competition?.broadcasts || []
-  const rawNetwork = broadcasts[0]?.names?.[0] || 'NBA League Pass'
+  const broadcasts = Array.isArray(competition?.broadcasts) ? competition.broadcasts : []
+  const rawNetwork = typeof broadcasts[0]?.names?.[0] === 'string' && broadcasts[0].names[0].trim()
+    ? broadcasts[0].names[0].trim()
+    : 'NBA League Pass'
   const netUpper = rawNetwork.toUpperCase()
+
+  const safeHome = typeof homeTeamAbbr === 'string' ? homeTeamAbbr.trim().toUpperCase() : ''
+  const safeAway = typeof awayTeamAbbr === 'string' ? awayTeamAbbr.trim().toUpperCase() : ''
 
   // Match National Crew
   for (const [key, crews] of Object.entries(NATIONAL_CREWS)) {
-    if (netUpper.includes(key)) {
+    if (netUpper.includes(key) && crews.length > 0) {
       const selected = crews[0]
       return {
         network: selected.networkName,
@@ -379,36 +384,40 @@ export function resolveAnnouncingCrew(
         colorAnalyst: selected.colorAnalyst,
         sidelineReporter: selected.sidelineReporter,
         radioNetwork: selected.radio,
-        officials: extractOfficials(competition?.officials, homeTeamAbbr),
+        officials: extractOfficials(competition?.officials, safeHome),
       }
     }
   }
 
   // Match Home Team Local RSN Crew
-  const homeCrew = TEAM_LOCAL_CREWS[homeTeamAbbr.toUpperCase()]
-  if (homeCrew) {
-    return {
-      network: rawNetwork !== 'NBA League Pass' ? rawNetwork : homeCrew.networkName,
-      market: 'Home Regional',
-      playByPlay: homeCrew.playByPlay,
-      colorAnalyst: homeCrew.colorAnalyst,
-      sidelineReporter: homeCrew.sidelineReporter,
-      radioNetwork: homeCrew.radio,
-      officials: extractOfficials(competition?.officials, homeTeamAbbr),
+  if (safeHome && Object.prototype.hasOwnProperty.call(TEAM_LOCAL_CREWS, safeHome)) {
+    const homeCrew = TEAM_LOCAL_CREWS[safeHome]
+    if (homeCrew) {
+      return {
+        network: rawNetwork !== 'NBA League Pass' ? rawNetwork : homeCrew.networkName,
+        market: 'Home Regional',
+        playByPlay: homeCrew.playByPlay,
+        colorAnalyst: homeCrew.colorAnalyst,
+        sidelineReporter: homeCrew.sidelineReporter,
+        radioNetwork: homeCrew.radio,
+        officials: extractOfficials(competition?.officials, safeHome),
+      }
     }
   }
 
   // Match Away Team Crew Fallback
-  const awayCrew = TEAM_LOCAL_CREWS[awayTeamAbbr.toUpperCase()]
-  if (awayCrew) {
-    return {
-      network: rawNetwork !== 'NBA League Pass' ? rawNetwork : awayCrew.networkName,
-      market: 'Away Regional',
-      playByPlay: awayCrew.playByPlay,
-      colorAnalyst: awayCrew.colorAnalyst,
-      sidelineReporter: awayCrew.sidelineReporter,
-      radioNetwork: awayCrew.radio,
-      officials: extractOfficials(competition?.officials, homeTeamAbbr),
+  if (safeAway && Object.prototype.hasOwnProperty.call(TEAM_LOCAL_CREWS, safeAway)) {
+    const awayCrew = TEAM_LOCAL_CREWS[safeAway]
+    if (awayCrew) {
+      return {
+        network: rawNetwork !== 'NBA League Pass' ? rawNetwork : awayCrew.networkName,
+        market: 'Away Regional',
+        playByPlay: awayCrew.playByPlay,
+        colorAnalyst: awayCrew.colorAnalyst,
+        sidelineReporter: awayCrew.sidelineReporter,
+        radioNetwork: awayCrew.radio,
+        officials: extractOfficials(competition?.officials, safeHome),
+      }
     }
   }
 
@@ -420,26 +429,34 @@ export function resolveAnnouncingCrew(
     colorAnalyst: 'Color Commentary',
     sidelineReporter: 'Sideline Desk',
     radioNetwork: 'Team Radio Network',
-    officials: extractOfficials(competition?.officials, homeTeamAbbr),
+    officials: extractOfficials(competition?.officials, safeHome),
   }
 }
 
 function extractOfficials(
-  officials?: NBAOfficial[],
-  seedKey = 'NBA'
+  officials?: NBAOfficial[] | null,
+  seedKey: unknown = 'NBA'
 ): Array<{ name: string; role: string }> {
-  if (officials && officials.length > 0) {
+  if (Array.isArray(officials) && officials.length > 0) {
     return officials.map((off, idx) => ({
-      name: off.displayName || off.fullName,
+      name: (typeof off?.displayName === 'string' && off.displayName) ||
+            (typeof off?.fullName === 'string' && off.fullName) ||
+            `Official #${idx + 1}`,
       role: idx === 0 ? 'Crew Chief' : idx === 1 ? 'Referee' : 'Umpire',
     }))
   }
 
-  // Stable pseudo-hash based on team abbr
-  const hash = seedKey.split('').reduce((acc, c) => acc + c.charCodeAt(0), 0)
-  const chief = NOTABLE_OFFICIALS[hash % 5]
-  const ref = NOTABLE_OFFICIALS[5 + (hash % 6)]
-  const umpire = NOTABLE_OFFICIALS[11 + (hash % 7)]
+  // Stable pseudo-hash based on seed string
+  const str = typeof seedKey === 'string' && seedKey.trim() ? seedKey.trim() : 'NBA'
+  const hash = Math.abs(str.split('').reduce((acc, c) => acc + c.charCodeAt(0), 0))
+
+  const chiefIdx = hash % 5
+  const refIdx = 5 + (hash % 6)
+  const umpireIdx = 11 + (hash % 6)
+
+  const chief = NOTABLE_OFFICIALS[chiefIdx] || NOTABLE_OFFICIALS[0]
+  const ref = NOTABLE_OFFICIALS[refIdx] || NOTABLE_OFFICIALS[5]
+  const umpire = NOTABLE_OFFICIALS[umpireIdx] || NOTABLE_OFFICIALS[11]
 
   return [chief, ref, umpire]
 }

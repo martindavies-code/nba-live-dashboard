@@ -1,19 +1,19 @@
-import React from 'react'
+import React, { memo } from 'react'
 import type { NBACompetitor, NBAStatus, NBAOdds, NBASituation } from '../types/nba'
-import { sanitizeHexColor } from '../utils/nbaHelpers'
+import { sanitizeHexColor, safeParseInt } from '../utils/nbaHelpers'
 
 interface WinProbabilityBarProps {
   homeWinPercentage?: number
   awayWinPercentage?: number
   homeCompetitor?: NBACompetitor
   awayCompetitor?: NBACompetitor
-  gameState?: 'pre' | 'in' | 'post'
+  gameState?: 'pre' | 'in' | 'post' | string
   status?: NBAStatus
   situation?: NBASituation | null
   odds?: NBAOdds[]
 }
 
-export const WinProbabilityBar: React.FC<WinProbabilityBarProps> = ({
+export const WinProbabilityBar: React.FC<WinProbabilityBarProps> = memo(({
   homeWinPercentage,
   awayWinPercentage,
   homeCompetitor,
@@ -31,8 +31,8 @@ export const WinProbabilityBar: React.FC<WinProbabilityBarProps> = ({
   let calculatedAwayPct = 50
 
   if (gameState === 'post') {
-    const homeScore = parseInt(homeCompetitor?.score || '0', 10)
-    const awayScore = parseInt(awayCompetitor?.score || '0', 10)
+    const homeScore = safeParseInt(homeCompetitor?.score, 0)
+    const awayScore = safeParseInt(awayCompetitor?.score, 0)
     if (homeScore > awayScore) {
       calculatedHomePct = 100
       calculatedAwayPct = 0
@@ -86,4 +86,4 @@ export const WinProbabilityBar: React.FC<WinProbabilityBarProps> = ({
       </div>
     </div>
   )
-}
+})

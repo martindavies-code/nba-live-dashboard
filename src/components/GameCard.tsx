@@ -1,8 +1,14 @@
-import React, { useState } from 'react'
+import React, { memo } from 'react'
 import type { NBAEvent } from '../types/nba'
 import { WinProbabilityBar } from './WinProbabilityBar'
 import { getScorigamiInfo } from '../utils/scorigami'
-import { safeParseInt, isClutchGame } from '../utils/nbaHelpers'
+import {
+  safeParseInt,
+  isClutchGame,
+  calculateSecondsRemaining,
+  calculateWinProbability,
+  sanitizeImageUrl,
+} from '../utils/nbaHelpers'
 import { Tv, Sparkles, Maximize2, ShieldAlert } from 'lucide-react'
 
 interface GameCardProps {
@@ -11,7 +17,7 @@ interface GameCardProps {
   onSpotlight?: () => void
 }
 
-export const GameCard: React.FC<GameCardProps> = ({
+export const GameCard: React.FC<GameCardProps> = memo(({
   event,
   isSpotlighted = false,
   onSpotlight,
@@ -31,12 +37,7 @@ export const GameCard: React.FC<GameCardProps> = ({
   const crew = competition.announcingCrew
   const isClutch = isClutchGame(status, competitors)
 
-  // Scorigami derivation
-  let secondsRemaining = status.clock || 0
-  if (status.period < 4) {
-    secondsRemaining += (4 - status.period) * 720
-  }
-
+  const secondsRemaining = calculateSecondsRemaining(status)
   const homeScore = safeParseInt(homeComp?.score, 0)
   const awayScore = safeParseInt(awayComp?.score, 0)
   const homeAbbr = homeComp?.team?.abbreviation || 'Home'
@@ -50,6 +51,9 @@ export const GameCard: React.FC<GameCardProps> = ({
     homeAbbr,
     awayAbbr
   )
+
+  const spread = competition.odds?.[0]?.spread ?? 0
+  const winProb = calculateWinProbability(homeScore, awayScore, secondsRemaining, state, spread)
 
   return (
     <article
@@ -115,7 +119,7 @@ export const GameCard: React.FC<GameCardProps> = ({
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2.5">
             <img
-              src={awayComp?.team?.logo || 'https://a.espncdn.com/i/teamlogos/nba/500/nba.png'}
+              src={sanitizeImageUrl(awayComp?.team?.logo)}
               alt={awayComp?.team?.displayName || 'Away'}
               className="h-7 w-7 object-contain"
               loading="lazy"
@@ -141,7 +145,7 @@ export const GameCard: React.FC<GameCardProps> = ({
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2.5">
             <img
-              src={homeComp?.team?.logo || 'https://a.espncdn.com/i/teamlogos/nba/500/nba.png'}
+              src={sanitizeImageUrl(homeComp?.team?.logo)}
               alt={homeComp?.team?.displayName || 'Home'}
               className="h-7 w-7 object-contain"
               loading="lazy"
@@ -167,7 +171,8 @@ export const GameCard: React.FC<GameCardProps> = ({
       {/* Footer Strip: Win Probability & Announcing Crew Pill */}
       <div className="px-3.5 pb-3 pt-1 space-y-2 border-t border-white/[0.04]">
         <WinProbabilityBar
-          homeWinPercentage={0.5}
+          homeWinPercentage={winProb.homePct / 100}
+          awayWinPercentage={winProb.awayPct / 100}
           homeCompetitor={homeComp}
           awayCompetitor={awayComp}
           gameState={state}
@@ -192,4 +197,4 @@ export const GameCard: React.FC<GameCardProps> = ({
       </div>
     </article>
   )
-}
+})

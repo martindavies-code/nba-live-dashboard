@@ -1,14 +1,12 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react'
-import type { GameFilter, NBAScoreboardData, NBAEvent } from '../types/nba'
+import React, { useState, useEffect, useCallback, useRef, useMemo, memo } from 'react'
+import type { GameFilter, NBAScoreboardData } from '../types/nba'
 import { DateSelector } from './DateSelector'
 import { HeroMatchup } from './HeroMatchup'
 import { GameCard } from './GameCard'
 import { fetchNBAScoreboard } from '../services/espnApi'
-import { isClutchGame } from '../utils/nbaHelpers'
+import { isClutchGame, safeStorage } from '../utils/nbaHelpers'
 import {
   playWhistleSound,
-  playSwishSound,
-  playBuzzerSound,
   playTactileClick,
 } from '../utils/audioFeedback'
 import { KeyboardShortcutsModal } from './KeyboardShortcutsModal'
@@ -17,16 +15,69 @@ import {
   RefreshCw,
   Search,
   WifiOff,
-  Flame,
   Volume2,
   VolumeX,
   Eye,
   Keyboard,
   Database,
-  ShieldAlert,
-  Clock,
-  Sparkles,
+  AlertCircle,
 } from 'lucide-react'
+
+/**
+ * Isolated Auto-Refresh Ticker component.
+ * Manages its own 1-second interval to avoid re-rendering the whole dashboard every second.
+ */
+interface AutoRefreshTickerProps {
+  isPaused: boolean
+  isRefreshing: boolean
+  onRefreshTrigger: () => void
+}
+
+const AutoRefreshTicker: React.FC<AutoRefreshTickerProps> = memo(({
+  isPaused,
+  isRefreshing,
+  onRefreshTrigger,
+}) => {
+  const [secondsLeft, setSecondsLeft] = useState<number>(10)
+  const triggerRef = useRef(onRefreshTrigger)
+
+  useEffect(() => {
+    triggerRef.current = onRefreshTrigger
+  }, [onRefreshTrigger])
+
+  useEffect(() => {
+    if (isPaused) return
+
+    const interval = setInterval(() => {
+      setSecondsLeft((prev) => {
+        if (prev <= 1) {
+          triggerRef.current()
+          return 10
+        }
+        return prev - 1
+      })
+    }, 1000)
+
+    return () => clearInterval(interval)
+  }, [isPaused])
+
+  // Reset countdown when manual refresh triggers
+  useEffect(() => {
+    if (isRefreshing) {
+      setSecondsLeft(10)
+    }
+  }, [isRefreshing])
+
+  return (
+    <div
+      className="flex items-center gap-1.5 rounded-lg border border-white/[0.08] bg-black/40 px-2.5 py-1 text-xs font-mono text-slate-300"
+      title="Next auto-refresh in seconds"
+    >
+      <RefreshCw className={`h-3 w-3 text-orange-400 ${isRefreshing ? 'animate-spin' : ''}`} />
+      <span className="tabular-nums font-bold">{secondsLeft}s</span>
+    </div>
+  )
+})
 
 export const Dashboard: React.FC = () => {
   const [data, setData] = useState<NBAScoreboardData | null>(null)
@@ -35,26 +86,17 @@ export const Dashboard: React.FC = () => {
   const [error, setError] = useState<string | null>(null)
   const [filter, setFilter] = useState<GameFilter>('all')
   const [searchQuery, setSearchQuery] = useState<string>('')
-  const [countdown, setCountdown] = useState<number>(10)
   const [lastUpdated, setLastUpdated] = useState<Date>(new Date())
   const [selectedHeroId, setSelectedHeroId] = useState<string | null>(null)
   const [selectedDate, setSelectedDate] = useState<string>(() => new Date().toISOString().slice(0, 10))
   const [isOnline, setIsOnline] = useState<boolean>(typeof navigator !== 'undefined' ? navigator.onLine : true)
 
   const [isMuted, setIsMuted] = useState<boolean>(() => {
-    try {
-      return localStorage.getItem('nba_muted') === 'true'
-    } catch {
-      return false
-    }
+    return safeStorage.getItem('nba_muted') === 'true'
   })
 
   const [isHighContrast, setIsHighContrast] = useState<boolean>(() => {
-    try {
-      return localStorage.getItem('nba_high_contrast') === 'true'
-    } catch {
-      return false
-    }
+    return safeStorage.getItem('nba_high_contrast') === 'true'
   })
 
   const [isShortcutsOpen, setIsShortcutsOpen] = useState<boolean>(false)
@@ -87,15 +129,12 @@ export const Dashboard: React.FC = () => {
     } else {
       document.documentElement.classList.remove('high-contrast')
     }
-    try {
-      localStorage.setItem('nba_high_contrast', String(isHighContrast))
-    } catch {}
+    safeStorage.setItem('nba_high_contrast', String(isHighContrast))
   }, [isHighContrast])
 
   // Fetch function with AbortController
   const loadData = useCallback(async (isManual = false, overrideDate?: string) => {
     if (isManual) setIsRefreshing(true)
-    setError(null)
 
     if (abortControllerRef.current) {
       abortControllerRef.current.abort()
@@ -109,7 +148,7 @@ export const Dashboard: React.FC = () => {
       const result = await fetchNBAScoreboard(dateToFetch, controller.signal)
       setData(result.data)
       setLastUpdated(new Date())
-      setCountdown(10)
+      setError(null)
     } catch (err: unknown) {
       if (err instanceof Error && err.name !== 'AbortError') {
         setError(err.message || 'Failed to fetch NBA scoreboard')
@@ -129,31 +168,21 @@ export const Dashboard: React.FC = () => {
     loadData(true)
   }, [loadData, selectedDate])
 
-  // 10-Second Auto-Poll Interval (Pauses when document hidden or modal open)
+  // Cleanup pending network request on unmount
   useEffect(() => {
-    const timer = setInterval(() => {
-      if (document.hidden || isShortcutsOpen || isSourcesOpen) return
-
-      setCountdown((prev) => {
-        if (prev <= 1) {
-          loadDataRef.current?.(false)
-          return 10
-        }
-        return prev - 1
-      })
-    }, 1000)
-
-    return () => clearInterval(timer)
-  }, [isShortcutsOpen, isSourcesOpen])
+    return () => {
+      abortControllerRef.current?.abort()
+    }
+  }, [])
 
   // Handle Quick Date Select (delta days)
-  const handleQuickDateSelect = (deltaDays: number) => {
+  const handleQuickDateSelect = useCallback((deltaDays: number) => {
     const current = new Date(selectedDate)
     current.setDate(current.getDate() + deltaDays)
     const nextStr = current.toISOString().slice(0, 10)
     setSelectedDate(nextStr)
     setSrAnnouncement(`Navigated to date ${nextStr}`)
-  }
+  }, [selectedDate])
 
   // Keyboard Shortcuts Handler
   useEffect(() => {
@@ -167,9 +196,7 @@ export const Dashboard: React.FC = () => {
         e.preventDefault()
         setIsMuted((prev) => {
           const next = !prev
-          try {
-            localStorage.setItem('nba_muted', String(next))
-          } catch {}
+          safeStorage.setItem('nba_muted', String(next))
           setSrAnnouncement(next ? 'Sound cues muted' : 'Sound cues active')
           return next
         })
@@ -193,42 +220,77 @@ export const Dashboard: React.FC = () => {
     return () => window.removeEventListener('keydown', handleKeyDown)
   }, [isMuted, loadData])
 
-  // Filtered Events
-  const events = data?.events || []
-  const filteredEvents = events.filter((ev) => {
-    const comp = ev.competitions?.[0]
-    const state = ev.status?.type?.state
-    const period = ev.status?.period
+  // Filtered Events with memoization
+  const events = useMemo(() => data?.events || [], [data?.events])
 
-    // Text Search
-    if (searchQuery.trim()) {
-      const q = searchQuery.toLowerCase()
-      const matchName = ev.name.toLowerCase().includes(q)
-      const matchTeams = comp?.competitors?.some(
-        (c) =>
-          c.team.displayName.toLowerCase().includes(q) ||
-          c.team.abbreviation.toLowerCase().includes(q) ||
-          c.team.location?.toLowerCase().includes(q)
-      )
-      if (!matchName && !matchTeams) return false
+  const filteredEvents = useMemo(() => {
+    return events.filter((ev) => {
+      const comp = ev.competitions?.[0]
+      const state = ev.status?.type?.state
+      const period = ev.status?.period
+
+      // Text Search
+      if (searchQuery.trim()) {
+        const q = searchQuery.toLowerCase().trim()
+        const matchName = ev.name.toLowerCase().includes(q)
+        const matchTeams = comp?.competitors?.some(
+          (c) =>
+            c.team.displayName.toLowerCase().includes(q) ||
+            c.team.abbreviation.toLowerCase().includes(q) ||
+            c.team.location?.toLowerCase().includes(q)
+        )
+        if (!matchName && !matchTeams) return false
+      }
+
+      // Category Tabs
+      if (filter === 'live') return state === 'in'
+      if (filter === 'clutch') return isClutchGame(ev.status, comp?.competitors)
+      if (filter === 'fourth') return state === 'in' && period >= 4
+      if (filter === 'halftime') {
+        return ev.status?.type?.name === 'STATUS_HALFTIME' || ev.status?.type?.detail === 'Halftime'
+      }
+      if (filter === 'upcoming') return state === 'pre'
+      if (filter === 'final') return state === 'post'
+      return true
+    })
+  }, [events, filter, searchQuery])
+
+  // Filter tab counts
+  const tabCounts = useMemo(() => {
+    return {
+      all: events.length,
+      live: events.filter((e) => e.status?.type?.state === 'in').length,
+      clutch: events.filter((e) => isClutchGame(e.status, e.competitions?.[0]?.competitors)).length,
+      fourth: events.filter((e) => e.status?.type?.state === 'in' && e.status?.period >= 4).length,
+      halftime: events.filter(
+        (e) => e.status?.type?.name === 'STATUS_HALFTIME' || e.status?.type?.detail === 'Halftime'
+      ).length,
+      upcoming: events.filter((e) => e.status?.type?.state === 'pre').length,
+      final: events.filter((e) => e.status?.type?.state === 'post').length,
     }
+  }, [events])
 
-    // Category Tabs
-    if (filter === 'live') return state === 'in'
-    if (filter === 'clutch') return isClutchGame(ev.status, comp?.competitors)
-    if (filter === 'fourth') return state === 'in' && period >= 4
-    if (filter === 'halftime') return ev.status?.type?.name === 'STATUS_HALFTIME' || ev.status?.type?.detail === 'Halftime'
-    if (filter === 'upcoming') return state === 'pre'
-    if (filter === 'final') return state === 'post'
-    return true
-  })
+  // Selected Hero Spotlight Event: Default to selected, live clutch, live, or first game
+  const heroEvent = useMemo(() => {
+    return (
+      events.find((e) => e.id === selectedHeroId) ||
+      events.find((e) => isClutchGame(e.status, e.competitions?.[0]?.competitors)) ||
+      events.find((e) => e.status?.type?.state === 'in') ||
+      events[0] ||
+      null
+    )
+  }, [events, selectedHeroId])
 
-  // Selected Hero Spotlight Event: Default to first live clutch/live game, or first game
-  const heroEvent =
-    events.find((e) => e.id === selectedHeroId) ||
-    events.find((e) => isClutchGame(e.status, e.competitions?.[0]?.competitors)) ||
-    events.find((e) => e.status?.type?.state === 'in') ||
-    events[0]
+  const handleSpotlight = useCallback(
+    (id: string, name: string) => {
+      setSelectedHeroId(id)
+      setSrAnnouncement(`Spotlighted ${name}`)
+      if (!isMuted) playTactileClick()
+    },
+    [isMuted]
+  )
+
+  const isTickerPaused = typeof document !== 'undefined' && document.hidden || isShortcutsOpen || isSourcesOpen
 
   return (
     <div className="min-h-screen bg-[#060a12] text-slate-100 flex flex-col font-sans">
@@ -242,6 +304,22 @@ export const Dashboard: React.FC = () => {
         <div className="flex items-center justify-center gap-2 bg-amber-500/20 border-b border-amber-500/30 px-4 py-1.5 text-xs font-bold text-amber-300">
           <WifiOff className="h-4 w-4" />
           <span>Offline mode: Displaying cached NBA scoreboard data</span>
+        </div>
+      )}
+
+      {/* Error Alert Strip */}
+      {error && (
+        <div className="flex items-center justify-between bg-rose-500/20 border-b border-rose-500/30 px-4 py-2 text-xs font-bold text-rose-300">
+          <div className="flex items-center gap-2">
+            <AlertCircle className="h-4 w-4 text-rose-400" />
+            <span>{error}</span>
+          </div>
+          <button
+            onClick={() => loadData(true)}
+            className="rounded bg-rose-600 hover:bg-rose-500 px-2.5 py-0.5 text-white text-[11px] font-semibold"
+          >
+            Retry
+          </button>
         </div>
       )}
 
@@ -278,6 +356,11 @@ export const Dashboard: React.FC = () => {
 
           {/* Right Controls: Auto-Poll Ticker, Audio, High Contrast, Modals */}
           <div className="flex items-center gap-2">
+            {/* Last updated timestamp */}
+            <span className="hidden lg:inline text-[10px] font-mono text-slate-400">
+              Synced {lastUpdated.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+            </span>
+
             {/* Switcher to NFL Dashboard */}
             <a
               href="https://martindavies-code.github.io/nfl-live-dashboard/"
@@ -289,13 +372,11 @@ export const Dashboard: React.FC = () => {
             </a>
 
             {/* Auto-poll Countdown Pill */}
-            <div
-              className="flex items-center gap-1.5 rounded-lg border border-white/[0.08] bg-black/40 px-2.5 py-1 text-xs font-mono text-slate-300"
-              title="Next auto-refresh in seconds"
-            >
-              <RefreshCw className={`h-3 w-3 text-orange-400 ${isRefreshing ? 'animate-spin' : ''}`} />
-              <span className="tabular-nums font-bold">{countdown}s</span>
-            </div>
+            <AutoRefreshTicker
+              isPaused={isTickerPaused}
+              isRefreshing={isRefreshing}
+              onRefreshTrigger={() => loadData(false)}
+            />
 
             {/* Manual Refresh */}
             <button
@@ -315,9 +396,7 @@ export const Dashboard: React.FC = () => {
               onClick={() => {
                 const next = !isMuted
                 setIsMuted(next)
-                try {
-                  localStorage.setItem('nba_muted', String(next))
-                } catch {}
+                safeStorage.setItem('nba_muted', String(next))
                 if (!next) playWhistleSound()
               }}
               className={`p-1.5 rounded-lg border transition-colors ${
@@ -372,33 +451,13 @@ export const Dashboard: React.FC = () => {
           {/* Filter Tabs */}
           <div className="flex items-center gap-1 overflow-x-auto text-xs py-0.5">
             {[
-              { id: 'all', label: 'All Matchups', count: events.length },
-              { id: 'live', label: 'Live Now', count: events.filter((e) => e.status?.type?.state === 'in').length },
-              {
-                id: 'clutch',
-                label: '🔥 Clutch (≤5 pts)',
-                count: events.filter((e) => isClutchGame(e.status, e.competitions?.[0]?.competitors)).length,
-              },
-              {
-                id: 'fourth',
-                label: '4th Quarter',
-                count: events.filter((e) => e.status?.type?.state === 'in' && e.status?.period >= 4).length,
-              },
-              {
-                id: 'halftime',
-                label: 'Halftime',
-                count: events.filter((e) => e.status?.type?.name === 'STATUS_HALFTIME' || e.status?.type?.detail === 'Halftime').length,
-              },
-              {
-                id: 'upcoming',
-                label: 'Upcoming',
-                count: events.filter((e) => e.status?.type?.state === 'pre').length,
-              },
-              {
-                id: 'final',
-                label: 'Final',
-                count: events.filter((e) => e.status?.type?.state === 'post').length,
-              },
+              { id: 'all', label: 'All Matchups', count: tabCounts.all },
+              { id: 'live', label: 'Live Now', count: tabCounts.live },
+              { id: 'clutch', label: '🔥 Clutch (≤5 pts)', count: tabCounts.clutch },
+              { id: 'fourth', label: '4th Quarter', count: tabCounts.fourth },
+              { id: 'halftime', label: 'Halftime', count: tabCounts.halftime },
+              { id: 'upcoming', label: 'Upcoming', count: tabCounts.upcoming },
+              { id: 'final', label: 'Final', count: tabCounts.final },
             ].map((tab) => (
               <button
                 key={tab.id}
@@ -440,49 +499,54 @@ export const Dashboard: React.FC = () => {
 
       {/* Main Content Area */}
       <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-6 space-y-8">
-        {/* Spotlight Hero Matchup */}
-        {heroEvent ? (
-          <HeroMatchup event={heroEvent} onSelectGame={(id) => setSelectedHeroId(id)} />
+        {isLoading && !data ? (
+          <div className="rounded-2xl border border-white/[0.08] bg-[#090f1d] p-16 text-center space-y-3">
+            <RefreshCw className="h-8 w-8 text-orange-400 animate-spin mx-auto" />
+            <p className="text-sm font-semibold text-slate-300">Loading Live NBA Scores & Scorigami...</p>
+          </div>
         ) : (
-          <div className="rounded-2xl border border-white/[0.08] bg-[#090f1d] p-12 text-center text-slate-400">
-            No matchups found matching the active filter.
-          </div>
+          <>
+            {/* Spotlight Hero Matchup */}
+            {heroEvent ? (
+              <HeroMatchup event={heroEvent} onSelectGame={(id) => setSelectedHeroId(id)} />
+            ) : (
+              <div className="rounded-2xl border border-white/[0.08] bg-[#090f1d] p-12 text-center text-slate-400">
+                No matchups found matching the active filter.
+              </div>
+            )}
+
+            {/* Scoreboard Grid Section */}
+            <section className="space-y-4">
+              <div className="flex items-center justify-between border-b border-white/[0.08] pb-2">
+                <div className="flex items-center gap-2">
+                  <h2 className="font-['Oswald'] text-lg font-bold uppercase tracking-wider text-white">
+                    All Matchups ({filteredEvents.length})
+                  </h2>
+                  <span className="text-xs text-slate-400 font-mono">
+                    Click any matchup to spotlight on the court radar
+                  </span>
+                </div>
+              </div>
+
+              {filteredEvents.length > 0 ? (
+                <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+                  {filteredEvents.map((ev) => (
+                    <GameCard
+                      key={ev.id}
+                      event={ev}
+                      isSpotlighted={ev.id === heroEvent?.id}
+                      onSpotlight={() => handleSpotlight(ev.id, ev.name)}
+                    />
+                  ))}
+                </div>
+              ) : (
+                <div className="rounded-xl border border-white/[0.08] bg-[#090f1d] p-8 text-center text-slate-400">
+                  No games found for this selection.
+                </div>
+              )}
+            </section>
+          </>
         )}
-
-        {/* Scoreboard Grid Section */}
-        <section className="space-y-4">
-          <div className="flex items-center justify-between border-b border-white/[0.08] pb-2">
-            <div className="flex items-center gap-2">
-              <h2 className="font-['Oswald'] text-lg font-bold uppercase tracking-wider text-white">
-                All Matchups ({filteredEvents.length})
-              </h2>
-              <span className="text-xs text-slate-400 font-mono">
-                Click any matchup to spotlight on the court radar
-              </span>
-            </div>
-          </div>
-
-          {filteredEvents.length > 0 ? (
-            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-              {filteredEvents.map((ev) => (
-                <GameCard
-                  key={ev.id}
-                  event={ev}
-                  isSpotlighted={ev.id === heroEvent?.id}
-                  onSpotlight={() => {
-                    setSelectedHeroId(ev.id)
-                    setSrAnnouncement(`Spotlighted ${ev.name}`)
-                    if (!isMuted) playTactileClick()
-                  }}
-                />
-              ))}
-            </div>
-          ) : (
-            <div className="rounded-xl border border-white/[0.08] bg-[#090f1d] p-8 text-center text-slate-400">
-              No games found for this selection.
-            </div>
-          )}
-        </section>
       </main>
 
       {/* Modals */}

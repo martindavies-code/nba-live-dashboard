@@ -1,4 +1,5 @@
 import { HISTORICAL_OCCURRED, TOTAL_UNIQUE_NBA_SCORIGAMIS, type HistoricalScoreRecord } from './scorigamiHistoricalData.ts'
+import { safeParseInt } from './nbaHelpers.ts'
 
 export interface NBAScorigamiInfo {
   isCurrentScorigami: boolean
@@ -17,25 +18,57 @@ export interface NBAScorigamiInfo {
   pointsNeededAway: number
 }
 
-export function makeScoreKey(a: number, b: number): string {
-  const hi = Math.max(a, b)
-  const lo = Math.min(a, b)
+// In-memory LRU cache for scorigami evaluations to prevent redundant loop calculations
+const SCORIGAMI_CACHE = new Map<string, NBAScorigamiInfo>()
+const MAX_CACHE_ENTRIES = 200
+
+/**
+ * Creates canonical hi-lo score key safely.
+ * Bounds all inputs to non-negative integers.
+ */
+export function makeScoreKey(a: unknown, b: unknown): string {
+  const safeA = safeParseInt(a, 0, 0)
+  const safeB = safeParseInt(b, 0, 0)
+  const hi = Math.max(safeA, safeB)
+  const lo = Math.min(safeA, safeB)
   return `${hi}-${lo}`
 }
 
-export function hasOccurred(a: number, b: number): boolean {
-  return makeScoreKey(a, b) in HISTORICAL_OCCURRED
+/**
+ * Prototype-safe check for whether an NBA score combination has occurred historically.
+ */
+export function hasOccurred(a: unknown, b: unknown): boolean {
+  const key = makeScoreKey(a, b)
+  return Object.prototype.hasOwnProperty.call(HISTORICAL_OCCURRED, key)
 }
 
-export function getHistoricalRecord(a: number, b: number): HistoricalScoreRecord | null {
-  return HISTORICAL_OCCURRED[makeScoreKey(a, b)] || null
+/**
+ * Retrieves the historical record tuple for a score key safely.
+ */
+export function getHistoricalRecord(a: unknown, b: unknown): HistoricalScoreRecord | null {
+  const key = makeScoreKey(a, b)
+  if (Object.prototype.hasOwnProperty.call(HISTORICAL_OCCURRED, key)) {
+    return HISTORICAL_OCCURRED[key] ?? null
+  }
+  return null
 }
 
-export function formatHistoricalDate(isoDate: string): string {
-  if (!isoDate) return ''
-  const [y, m, d] = isoDate.split('-').map(Number)
-  if (isNaN(y) || isNaN(m) || isNaN(d)) return isoDate
+/**
+ * Safely parses and formats ISO date string to readable format.
+ */
+export function formatHistoricalDate(isoDate: unknown): string {
+  if (typeof isoDate !== 'string' || !isoDate.trim()) return ''
+  const parts = isoDate.trim().split('-')
+  if (parts.length !== 3) return isoDate.trim()
+
+  const [y, m, d] = parts.map(Number)
+  if (!Number.isFinite(y) || !Number.isFinite(m) || !Number.isFinite(d)) {
+    return isoDate.trim()
+  }
+
   const date = new Date(Date.UTC(y, m - 1, d))
+  if (isNaN(date.getTime())) return isoDate.trim()
+
   return date.toLocaleDateString('en-US', {
     month: 'short',
     day: 'numeric',
@@ -46,25 +79,32 @@ export function formatHistoricalDate(isoDate: string): string {
 
 /**
  * Calculates NBA Scorigami probability, historical frequency, and target scores.
- *
- * NBA dynamics:
- * - Regulation game: 48 minutes (2,880 seconds)
- * - Average pace: ~100 possessions per 48 mins (~2.08 possessions / minute)
- * - Points per possession: ~1.12
+ * Fully isolated from prototype pollution, non-finite inputs, and redundant loop computations.
  */
 export function getScorigamiInfo(
-  homeScore: number,
-  awayScore: number,
-  secondsRemaining: number,
-  gameState: 'pre' | 'in' | 'post',
+  homeScore: unknown,
+  awayScore: unknown,
+  secondsRemaining: unknown,
+  gameState: 'pre' | 'in' | 'post' | string = 'in',
   homeAbbr = 'Home',
   awayAbbr = 'Away'
 ): NBAScorigamiInfo {
-  const safeHome = Number.isFinite(homeScore) ? Math.max(0, Math.floor(homeScore)) : 0
-  const safeAway = Number.isFinite(awayScore) ? Math.max(0, Math.floor(awayScore)) : 0
+  const safeHome = safeParseInt(homeScore, 0, 0)
+  const safeAway = safeParseInt(awayScore, 0, 0)
+  const safeSec = safeParseInt(secondsRemaining, 0, 0, 2880 * 2)
   const key = makeScoreKey(safeHome, safeAway)
-  const histRecord = HISTORICAL_OCCURRED[key]
+
+  // Cache key buckets seconds remaining into 15-second windows to optimize cache hits during live play
+  const timeBucket = gameState === 'in' ? Math.floor(safeSec / 15) : 0
+  const cacheKey = `${key}_${timeBucket}_${gameState}_${homeAbbr}_${awayAbbr}`
+
+  const cached = SCORIGAMI_CACHE.get(cacheKey)
+  if (cached) return cached
+
+  const histRecord = getHistoricalRecord(safeHome, safeAway)
   const isCurrentScorigami = !histRecord && (safeHome > 0 || safeAway > 0)
+
+  let result: NBAScorigamiInfo
 
   // 1. POST GAME: Definitive Historical Status
   if (gameState === 'post') {
@@ -77,7 +117,7 @@ export function getScorigamiInfo(
       ? `${lastWinner} ${key.split('-')[0]}, ${lastLoser} ${key.split('-')[1]} on ${lastDate}`
       : null
 
-    return {
+    result = {
       isCurrentScorigami,
       chanceLabel: isCurrentScorigami ? '100% — Historical NBA Scorigami! ✨' : '0% — Already Occurred',
       chancePct: isCurrentScorigami ? 1 : 0,
@@ -95,16 +135,13 @@ export function getScorigamiInfo(
       pointsNeededHome: 0,
       pointsNeededAway: 0,
     }
-  }
-
-  // 2. PRE-GAME: Projected Scorigami Probability
-  if (gameState === 'pre' || (safeHome === 0 && safeAway === 0)) {
-    // In NBA, pre-game novelty probability is typically ~4% - 9%
+  } else if (gameState === 'pre' || (safeHome === 0 && safeAway === 0)) {
+    // 2. PRE-GAME: Projected Scorigami Probability
     const targetHome = 139
     const targetAway = 119
     const novelKey = makeScoreKey(targetHome, targetAway)
 
-    return {
+    result = {
       isCurrentScorigami: false,
       chanceLabel: '7.8% Novelty Chance',
       chancePct: 0.078,
@@ -120,84 +157,96 @@ export function getScorigamiInfo(
       pointsNeededHome: targetHome,
       pointsNeededAway: targetAway,
     }
-  }
+  } else {
+    // 3. LIVE GAME: Dynamic Scorigami Probability & Projections
+    const minutesLeft = Math.max(0.1, safeSec / 60)
+    const expAddPoints = Math.round(minutesLeft * 2.3)
 
-  // 3. LIVE GAME: Dynamic Scorigami Probability & Projections
-  const minutesLeft = Math.max(0.1, secondsRemaining / 60)
-  // Expected additional points per team: ~2.3 points per minute
-  const expAddPoints = Math.round(minutesLeft * 2.3)
+    // Find nearest novel score candidate in projected range
+    let bestNovelScore: { hi: number; lo: number; dist: number } | null = null
+    const projHome = safeHome + expAddPoints
+    const projAway = safeAway + expAddPoints
 
-  // Find nearest novel score candidate in projected range
-  let bestNovelScore: { hi: number; lo: number; dist: number } | null = null
-  const projHome = safeHome + expAddPoints
-  const projAway = safeAway + expAddPoints
+    // Efficiently search surrounding score combinations
+    for (let dh = -6; dh <= 14; dh++) {
+      for (let da = -6; da <= 14; da++) {
+        const h = Math.max(safeHome, projHome + dh)
+        const a = Math.max(safeAway, projAway + da)
+        if (h === a) continue // NBA games cannot end in a tie
 
-  for (let dh = -6; dh <= 14; dh++) {
-    for (let da = -6; da <= 14; da++) {
-      const h = Math.max(safeHome, projHome + dh)
-      const a = Math.max(safeAway, projAway + da)
-      if (h === a) continue // NBA games cannot end in a tie
-      const candidateKey = makeScoreKey(h, a)
-      if (!(candidateKey in HISTORICAL_OCCURRED)) {
-        const dist = Math.abs(h - projHome) + Math.abs(a - projAway)
-        if (!bestNovelScore || dist < bestNovelScore.dist) {
-          bestNovelScore = { hi: Math.max(h, a), lo: Math.min(h, a), dist }
+        if (!hasOccurred(h, a)) {
+          const dist = Math.abs(h - projHome) + Math.abs(a - projAway)
+          if (!bestNovelScore || dist < bestNovelScore.dist) {
+            bestNovelScore = { hi: Math.max(h, a), lo: Math.min(h, a), dist }
+          }
         }
       }
     }
+
+    let noveltyPct = 0
+    if (safeSec <= 120) {
+      noveltyPct = isCurrentScorigami ? 0.72 : 0.04
+    } else if (safeSec <= 600) {
+      noveltyPct = isCurrentScorigami ? 0.45 : 0.12
+    } else {
+      noveltyPct = 0.08
+    }
+
+    const novelKey = bestNovelScore ? `${bestNovelScore.hi}-${bestNovelScore.lo}` : '142-136'
+    const targetHomePts = bestNovelScore
+      ? (safeHome >= safeAway ? bestNovelScore.hi : bestNovelScore.lo)
+      : safeHome + 15
+    const targetAwayPts = bestNovelScore
+      ? (safeAway > safeHome ? bestNovelScore.hi : bestNovelScore.lo)
+      : safeAway + 12
+    const ptsNeededHome = Math.max(0, targetHomePts - safeHome)
+    const ptsNeededAway = Math.max(0, targetAwayPts - safeAway)
+
+    const minPart = Math.floor(safeSec / 60)
+    const secPart = String(Math.floor(safeSec % 60)).padStart(2, '0')
+
+    let whenScenario = ''
+    if (isCurrentScorigami && safeSec <= 90) {
+      whenScenario = `🔥 Current score (${key}) is a SCORIGAMI right now if score holds in final ${Math.round(safeSec)}s!`
+    } else if (isCurrentScorigami) {
+      whenScenario = `Current score (${key}) is historically novel! Target to maintain novelty: ${novelKey}`
+    } else {
+      whenScenario = `Target novel score: ${novelKey} (Needs +${ptsNeededHome} ${homeAbbr}, +${ptsNeededAway} ${awayAbbr} in remaining ${minPart}:${secPart})`
+    }
+
+    const occurrences = histRecord ? histRecord[0] : 0
+    const lastYear = histRecord ? histRecord[1] : null
+    const lastDate = histRecord ? formatHistoricalDate(histRecord[2]) : null
+    const lastWinner = histRecord ? histRecord[3] : null
+    const lastLoser = histRecord ? histRecord[4] : null
+    const lastGameSummary = histRecord
+      ? `${lastWinner} ${key.split('-')[0]}, ${lastLoser} ${key.split('-')[1]} on ${lastDate}`
+      : null
+
+    result = {
+      isCurrentScorigami,
+      chanceLabel: `${Math.round(noveltyPct * 100)}% Novelty Chance`,
+      chancePct: noveltyPct,
+      mostLikelyNovel: novelKey,
+      mostLikelyLabel: novelKey,
+      whenScenario,
+      currentOccurrences: occurrences,
+      lastSeenYear: lastYear,
+      lastDate,
+      lastWinner,
+      lastLoser,
+      lastGameSummary,
+      pointsNeededHome: ptsNeededHome,
+      pointsNeededAway: ptsNeededAway,
+    }
   }
 
-  // Calculate live novelty probability
-  let noveltyPct = 0
-  if (secondsRemaining <= 120) {
-    // Under 2 mins: high fidelity depending on current score
-    noveltyPct = isCurrentScorigami ? 0.72 : 0.04
-  } else if (secondsRemaining <= 600) {
-    // 4th quarter
-    noveltyPct = isCurrentScorigami ? 0.45 : 0.12
-  } else {
-    // Earlier quarters
-    noveltyPct = 0.08
+  // Manage cache bounds
+  if (SCORIGAMI_CACHE.size >= MAX_CACHE_ENTRIES) {
+    const firstKey = SCORIGAMI_CACHE.keys().next().value
+    if (firstKey) SCORIGAMI_CACHE.delete(firstKey)
   }
+  SCORIGAMI_CACHE.set(cacheKey, result)
 
-  const novelKey = bestNovelScore ? `${bestNovelScore.hi}-${bestNovelScore.lo}` : '142-136'
-  const targetHomePts = bestNovelScore ? (safeHome >= safeAway ? bestNovelScore.hi : bestNovelScore.lo) : safeHome + 15
-  const targetAwayPts = bestNovelScore ? (safeAway > safeHome ? bestNovelScore.hi : bestNovelScore.lo) : safeAway + 12
-  const ptsNeededHome = Math.max(0, targetHomePts - safeHome)
-  const ptsNeededAway = Math.max(0, targetAwayPts - safeAway)
-
-  let whenScenario = ''
-  if (isCurrentScorigami && secondsRemaining <= 90) {
-    whenScenario = `🔥 Current score (${key}) is a SCORIGAMI right now if score holds in final ${Math.round(secondsRemaining)}s!`
-  } else if (isCurrentScorigami) {
-    whenScenario = `Current score (${key}) is historically novel! Target to maintain novelty: ${novelKey}`
-  } else {
-    whenScenario = `Target novel score: ${novelKey} (Needs +${ptsNeededHome} ${homeAbbr}, +${ptsNeededAway} ${awayAbbr} in remaining ${Math.floor(secondsRemaining / 60)}:${String(Math.floor(secondsRemaining % 60)).padStart(2, '0')})`
-  }
-
-  const occurrences = histRecord ? histRecord[0] : 0
-  const lastYear = histRecord ? histRecord[1] : null
-  const lastDate = histRecord ? formatHistoricalDate(histRecord[2]) : null
-  const lastWinner = histRecord ? histRecord[3] : null
-  const lastLoser = histRecord ? histRecord[4] : null
-  const lastGameSummary = histRecord
-    ? `${lastWinner} ${key.split('-')[0]}, ${lastLoser} ${key.split('-')[1]} on ${lastDate}`
-    : null
-
-  return {
-    isCurrentScorigami,
-    chanceLabel: `${Math.round(noveltyPct * 100)}% Novelty Chance`,
-    chancePct: noveltyPct,
-    mostLikelyNovel: novelKey,
-    mostLikelyLabel: novelKey,
-    whenScenario,
-    currentOccurrences: occurrences,
-    lastSeenYear: lastYear,
-    lastDate,
-    lastWinner,
-    lastLoser,
-    lastGameSummary,
-    pointsNeededHome: ptsNeededHome,
-    pointsNeededAway: ptsNeededAway,
-  }
+  return result
 }
