@@ -7,3 +7,7 @@ dist-ssr/
 .idea
 .DS_Store
 *.log
+screenshots/
+*.png
+test_*.png
+scratch/
