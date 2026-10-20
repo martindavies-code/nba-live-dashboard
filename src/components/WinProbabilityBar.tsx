@@ -53,23 +53,26 @@ export const WinProbabilityBar: React.FC<WinProbabilityBarProps> = memo(({
 
   return (
     <div className="w-full space-y-1.5">
-      <div className="flex items-center justify-between text-xs font-mono">
-        <div className="flex items-center gap-1.5 font-bold">
-          <span className="h-2 w-2 rounded-full" style={{ backgroundColor: awayColor }} />
+      <div className="flex items-center justify-between gap-1 text-xs font-mono">
+        <div className="flex items-center gap-1.5 font-bold shrink-0">
+          <span className="h-2 w-2 rounded-full shrink-0" style={{ backgroundColor: awayColor }} />
           <span className="text-slate-300">{awayAbbr}</span>
           <span className="text-white tabular-nums font-black">{calculatedAwayPct}%</span>
         </div>
 
         {(oddsText || overUnderText) && (
-          <span className="text-[10px] text-slate-400 font-sans">
+          <span
+            className="text-[10px] text-slate-400 font-sans truncate px-1 text-center max-w-[130px] sm:max-w-none"
+            title={`${oddsText || ''} ${overUnderText ? `• ${overUnderText}` : ''}`.trim()}
+          >
             {oddsText} {overUnderText && `• ${overUnderText}`}
           </span>
         )}
 
-        <div className="flex items-center gap-1.5 font-bold">
+        <div className="flex items-center gap-1.5 font-bold shrink-0">
           <span className="text-white tabular-nums font-black">{calculatedHomePct}%</span>
           <span className="text-slate-300">{homeAbbr}</span>
-          <span className="h-2 w-2 rounded-full" style={{ backgroundColor: homeColor }} />
+          <span className="h-2 w-2 rounded-full shrink-0" style={{ backgroundColor: homeColor }} />
         </div>
       </div>
 

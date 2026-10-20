@@ -87,22 +87,22 @@ export const HeroMatchup: React.FC<HeroMatchupProps> = memo(({ event }) => {
   return (
     <section className="relative overflow-hidden rounded-2xl border border-white/[0.12] bg-gradient-to-b from-[#0b1222] via-[#090e1a] to-[#060a12] shadow-2xl backdrop-blur-xl">
       {/* Top Spotlight Header Bar */}
-      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-white/[0.08] bg-black/40 px-5 py-3 text-xs">
-        <div className="flex items-center gap-2.5">
+      <div className="flex flex-wrap items-center justify-between gap-2.5 border-b border-white/[0.08] bg-black/40 px-4 sm:px-5 py-2.5 sm:py-3 text-xs">
+        <div className="flex flex-wrap items-center gap-2">
           <span className="flex h-2.5 w-2.5 rounded-full bg-orange-500 animate-ping" />
-          <span className="font-extrabold uppercase tracking-widest text-orange-400 text-[11px]">
+          <span className="font-extrabold uppercase tracking-widest text-orange-400 text-[10px] sm:text-[11px]">
             Spotlight Matchup
           </span>
-          <span className="text-slate-600">|</span>
-          <span className="font-mono text-slate-300 font-bold">
+          <span className="text-slate-600 hidden sm:inline">|</span>
+          <span className="font-mono text-slate-300 font-bold text-[11px] sm:text-xs">
             {isLive ? `Quarter ${status.period} • ${status.displayClock}` : status.type?.detail || 'Match Details'}
           </span>
         </div>
 
-        <div className="flex items-center gap-3">
+        <div className="flex flex-wrap items-center gap-2">
           {/* Announcing Crew Network Badge */}
           {crew?.network && (
-            <span className="inline-flex items-center gap-1.5 rounded-full bg-sky-500/15 border border-sky-400/30 px-3 py-1 font-semibold text-sky-200">
+            <span className="inline-flex items-center gap-1.5 rounded-full bg-sky-500/15 border border-sky-400/30 px-2.5 py-0.5 sm:px-3 sm:py-1 font-semibold text-sky-200 text-[10px] sm:text-xs">
               <Tv className="h-3 w-3 text-sky-400" />
               {crew.network}
             </span>
@@ -110,8 +110,8 @@ export const HeroMatchup: React.FC<HeroMatchupProps> = memo(({ event }) => {
 
           {/* Clutch Alert Badge */}
           {isClutch && (
-            <span className="inline-flex items-center gap-1 rounded bg-rose-600/30 border border-rose-500/50 px-2.5 py-0.5 text-xs font-black text-rose-300 animate-pulse">
-              <ShieldAlert className="h-3.5 w-3.5 text-rose-400" />
+            <span className="inline-flex items-center gap-1 rounded bg-rose-600/30 border border-rose-500/50 px-2 py-0.5 text-[10px] sm:text-xs font-black text-rose-300 animate-pulse">
+              <ShieldAlert className="h-3 w-3 sm:h-3.5 sm:w-3.5 text-rose-400" />
               CLUTCH GAME
             </span>
           )}
@@ -119,7 +119,7 @@ export const HeroMatchup: React.FC<HeroMatchupProps> = memo(({ event }) => {
           {/* Copy Snapshot Button */}
           <button
             onClick={handleCopySnapshot}
-            className="flex items-center gap-1.5 rounded-lg border border-white/[0.1] bg-white/[0.06] hover:bg-white/[0.12] px-2.5 py-1 text-slate-300 hover:text-white transition-colors"
+            className="flex items-center gap-1.5 rounded-lg border border-white/[0.1] bg-white/[0.06] hover:bg-white/[0.12] px-2 py-0.5 sm:px-2.5 sm:py-1 text-slate-300 hover:text-white transition-colors text-[11px] sm:text-xs"
             title="Copy matchup snapshot to clipboard"
           >
             {isCopied ? <Check className="h-3.5 w-3.5 text-emerald-400" /> : <Share2 className="h-3.5 w-3.5" />}
@@ -129,19 +129,19 @@ export const HeroMatchup: React.FC<HeroMatchupProps> = memo(({ event }) => {
       </div>
 
       {/* Hero Content Grid: Left Column (Teams, Announcers, Scorigami) | Right Column (Court Shot Chart) */}
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 p-5 sm:p-6">
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 p-4 sm:p-6">
         {/* Left Column: Teams Scoreboard, Announcers, Scorigami */}
         <div className="lg:col-span-5 flex flex-col justify-between space-y-5">
           {/* Venue & Clock Strip */}
-          <div className="flex items-center justify-between border-b border-white/[0.06] pb-2.5 text-xs text-slate-400">
-            <span className="flex items-center gap-1.5">
+          <div className="flex items-center justify-between gap-2 border-b border-white/[0.06] pb-2 text-xs text-slate-400">
+            <span className="flex items-center gap-1.5 shrink-0">
               <span className="h-2 w-2 rounded-full bg-emerald-400" />
               {isLive ? 'Live On Air' : status.type?.detail}
             </span>
             {venueText && (
-              <span className="flex items-center gap-1 truncate max-w-[240px]" title={venueText}>
+              <span className="flex items-center gap-1 truncate max-w-[200px] sm:max-w-[240px]" title={venueText}>
                 <MapPin className="h-3 w-3 text-slate-500 shrink-0" />
-                {venueText}
+                <span className="truncate">{venueText}</span>
               </span>
             )}
           </div>
@@ -149,67 +149,67 @@ export const HeroMatchup: React.FC<HeroMatchupProps> = memo(({ event }) => {
           {/* Teams Display */}
           <div className="space-y-4">
             {/* Away Team */}
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-3.5">
+            <div className="flex items-center justify-between gap-3">
+              <div className="flex items-center gap-3 min-w-0">
                 <img
                   src={sanitizeImageUrl(awayComp?.team?.logo)}
                   alt={awayComp?.team?.displayName || 'Away'}
-                  className="h-12 w-12 object-contain drop-shadow-md"
+                  className="h-10 w-10 sm:h-12 sm:w-12 object-contain drop-shadow-md shrink-0"
                   loading="lazy"
                 />
-                <div>
-                  <div className="flex items-center gap-2">
-                    <span className="font-extrabold text-lg text-white">
+                <div className="min-w-0">
+                  <div className="flex items-center gap-1.5 sm:gap-2 flex-wrap">
+                    <span className="font-extrabold text-base sm:text-lg text-white truncate">
                       {awayComp?.team?.displayName || awayComp?.team?.name}
                     </span>
-                    <span className="font-mono text-xs font-semibold text-slate-400">
+                    <span className="font-mono text-xs font-semibold text-slate-400 shrink-0">
                       {awayComp?.team?.abbreviation}
                     </span>
                   </div>
                   <div className="flex items-center gap-2 text-xs text-slate-400">
                     <span>{awayComp?.records?.[0]?.summary || '0-0'}</span>
                     {situation?.possession === awayComp?.team?.id && (
-                      <span className="rounded bg-orange-500/20 text-orange-300 font-bold text-[10px] px-1.5 py-0.2">
+                      <span className="rounded bg-orange-500/20 text-orange-300 font-bold text-[10px] px-1.5 py-0.2 shrink-0">
                         POSSESSION
                       </span>
                     )}
                   </div>
                 </div>
               </div>
-              <span className="font-['Oswald'] text-4xl sm:text-5xl font-bold tracking-tight text-white tabular-nums">
+              <span className="font-['Oswald'] text-3xl sm:text-5xl font-bold tracking-tight text-white tabular-nums shrink-0">
                 {awayComp?.score ?? '-'}
               </span>
             </div>
 
             {/* Home Team */}
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-3.5">
+            <div className="flex items-center justify-between gap-3">
+              <div className="flex items-center gap-3 min-w-0">
                 <img
                   src={sanitizeImageUrl(homeComp?.team?.logo)}
                   alt={homeComp?.team?.displayName || 'Home'}
-                  className="h-12 w-12 object-contain drop-shadow-md"
+                  className="h-10 w-10 sm:h-12 sm:w-12 object-contain drop-shadow-md shrink-0"
                   loading="lazy"
                 />
-                <div>
-                  <div className="flex items-center gap-2">
-                    <span className="font-extrabold text-lg text-white">
+                <div className="min-w-0">
+                  <div className="flex items-center gap-1.5 sm:gap-2 flex-wrap">
+                    <span className="font-extrabold text-base sm:text-lg text-white truncate">
                       {homeComp?.team?.displayName || homeComp?.team?.name}
                     </span>
-                    <span className="font-mono text-xs font-semibold text-slate-400">
+                    <span className="font-mono text-xs font-semibold text-slate-400 shrink-0">
                       {homeComp?.team?.abbreviation}
                     </span>
                   </div>
                   <div className="flex items-center gap-2 text-xs text-slate-400">
                     <span>{homeComp?.records?.[0]?.summary || '0-0'}</span>
                     {situation?.possession === homeComp?.team?.id && (
-                      <span className="rounded bg-orange-500/20 text-orange-300 font-bold text-[10px] px-1.5 py-0.2">
+                      <span className="rounded bg-orange-500/20 text-orange-300 font-bold text-[10px] px-1.5 py-0.2 shrink-0">
                         POSSESSION
                       </span>
                     )}
                   </div>
                 </div>
               </div>
-              <span className="font-['Oswald'] text-4xl sm:text-5xl font-bold tracking-tight text-white tabular-nums">
+              <span className="font-['Oswald'] text-3xl sm:text-5xl font-bold tracking-tight text-white tabular-nums shrink-0">
                 {homeComp?.score ?? '-'}
               </span>
             </div>

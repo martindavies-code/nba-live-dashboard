@@ -73,12 +73,12 @@ export const CourtDiagram: React.FC<CourtDiagramProps> = memo(({
   return (
     <div className={`flex flex-col space-y-3.5 w-full ${isHero ? 'hero-court-diagram' : ''}`}>
       {/* Top Hoops Momentum Banner (Hoops Drive Equivalent) */}
-      <div className="flex flex-wrap items-center justify-between gap-2.5 rounded-xl border border-white/[0.08] bg-[#070b14]/90 p-3 shadow-md backdrop-blur-md">
+      <div className="flex flex-wrap items-center justify-between gap-2.5 rounded-xl border border-white/[0.08] bg-[#070b14]/90 p-2.5 sm:p-3 shadow-md backdrop-blur-md">
         {/* Left: Possession & Scoring Run */}
-        <div className="flex items-center gap-3">
-          <div className="flex items-center gap-1.5">
+        <div className="flex flex-wrap items-center gap-2 sm:gap-3 min-w-0">
+          <div className="flex items-center gap-1.5 shrink-0">
             <span
-              className="inline-block h-3 w-3 rounded-full animate-pulse"
+              className="inline-block h-2.5 w-2.5 sm:h-3 sm:w-3 rounded-full animate-pulse shrink-0"
               style={{
                 backgroundColor:
                   situation?.possession === homeComp?.team?.id
@@ -94,23 +94,25 @@ export const CourtDiagram: React.FC<CourtDiagramProps> = memo(({
           </div>
 
           {scoringRun && (
-            <span className="inline-flex items-center gap-1 rounded bg-orange-600/25 border border-orange-500/40 px-2 py-0.5 text-[11px] font-bold text-orange-200 animate-pulse">
-              <Flame className="h-3 w-3 text-orange-400 fill-orange-400" />
-              {scoringRun.teamAbbr} {scoringRun.points}-{scoringRun.opponentPoints} Run
-              {scoringRun.durationText ? ` (${scoringRun.durationText})` : ''}
+            <span className="inline-flex items-center gap-1 rounded bg-orange-600/25 border border-orange-500/40 px-2 py-0.5 text-[10px] sm:text-[11px] font-bold text-orange-200 animate-pulse">
+              <Flame className="h-3 w-3 text-orange-400 fill-orange-400 shrink-0" />
+              <span>
+                {scoringRun.teamAbbr} {scoringRun.points}-{scoringRun.opponentPoints} Run
+                {scoringRun.durationText ? ` (${scoringRun.durationText})` : ''}
+              </span>
             </span>
           )}
 
           {isClutch && (
-            <span className="inline-flex items-center gap-1 rounded bg-rose-600/30 border border-rose-500/50 px-2 py-0.5 text-[11px] font-extrabold text-rose-200 animate-pulse">
-              <ShieldAlert className="h-3 w-3 text-rose-400" />
-              CLUTCH TIME (≤5 PTS)
+            <span className="inline-flex items-center gap-1 rounded bg-rose-600/30 border border-rose-500/50 px-2 py-0.5 text-[10px] sm:text-[11px] font-extrabold text-rose-200 animate-pulse">
+              <ShieldAlert className="h-3 w-3 text-rose-400 shrink-0" />
+              <span>CLUTCH (≤5 PTS)</span>
             </span>
           )}
         </div>
 
         {/* Right: Shot Clock & Bonus Indicators */}
-        <div className="flex items-center gap-3 font-mono text-xs">
+        <div className="flex items-center gap-2 sm:gap-3 font-mono text-xs shrink-0">
           {/* Shot Clock */}
           {gameState === 'in' && (
             <div className="flex items-center gap-1.5 bg-black/60 border border-white/[0.1] px-2.5 py-1 rounded-md">

@@ -183,16 +183,26 @@ export const GameCard: React.FC<GameCardProps> = memo(({
         />
 
         {/* Scorigami Chance & Announcers Info */}
-        <div className="flex items-center justify-between text-[11px] text-slate-400 pt-1">
-          <span className="flex items-center gap-1 font-mono">
-            <Sparkles className={`h-3 w-3 ${scorigamiInfo.isCurrentScorigami ? 'text-violet-400' : 'text-slate-500'}`} />
-            <strong className={scorigamiInfo.isCurrentScorigami ? 'text-violet-300' : 'text-slate-400'}>
-              {scorigamiInfo.chanceLabel}
+        <div className="flex items-center justify-between gap-2 text-[11px] text-slate-400 pt-1">
+          <span
+            className="flex items-center gap-1 font-mono truncate min-w-0 max-w-[55%]"
+            title={scorigamiInfo.chanceLabel}
+          >
+            <Sparkles className={`h-3 w-3 shrink-0 ${scorigamiInfo.isCurrentScorigami ? 'text-violet-400' : 'text-slate-500'}`} />
+            <strong className={`truncate ${scorigamiInfo.isCurrentScorigami ? 'text-violet-300' : 'text-slate-400'}`}>
+              {scorigamiInfo.isCurrentScorigami
+                ? 'Scorigami! ✨'
+                : state === 'post'
+                ? `No Scorigami (${scorigamiInfo.currentOccurrences}x)`
+                : scorigamiInfo.chanceLabel}
             </strong>
           </span>
 
           {crew?.playByPlay && (
-            <span className="truncate max-w-[170px] text-slate-400" title={`${crew.playByPlay} & ${crew.colorAnalyst}`}>
+            <span
+              className="truncate text-slate-400 text-right min-w-0 max-w-[45%]"
+              title={`${crew.playByPlay} & ${crew.colorAnalyst}`}
+            >
               🎙️ {formatCrewShortLabel(crew.playByPlay, crew.colorAnalyst)}
             </span>
           )}

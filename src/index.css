@@ -63,3 +63,12 @@
 .animate-hoop-glow {
   animation: hoopGlow 2.5s ease-in-out infinite;
 }
+
+/* No-scrollbar utilities for clean horizontal swipe on mobile/tablet */
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}

@@ -325,46 +325,48 @@ export const Dashboard: React.FC = () => {
 
       {/* Main Command Header */}
       <header className="sticky top-0 z-40 border-b border-white/[0.08] bg-[#070b14]/90 backdrop-blur-xl">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-3.5 flex flex-wrap items-center justify-between gap-4">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-2.5 sm:py-3.5 flex flex-wrap items-center justify-between gap-3 sm:gap-4">
           {/* Logo & Live Status */}
-          <div className="flex items-center gap-3">
-            <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-gradient-to-tr from-orange-600 to-amber-500 shadow-lg shadow-orange-600/30">
-              <span className="text-xl">🏀</span>
+          <div className="flex items-center gap-2.5 sm:gap-3">
+            <div className="flex h-9 w-9 sm:h-10 sm:w-10 items-center justify-center rounded-xl bg-gradient-to-tr from-orange-600 to-amber-500 shadow-lg shadow-orange-600/30 shrink-0">
+              <span className="text-lg sm:text-xl">🏀</span>
             </div>
             <div>
               <div className="flex items-center gap-2">
-                <h1 className="font-['Oswald'] text-xl sm:text-2xl font-bold tracking-wide uppercase text-white">
+                <h1 className="font-['Oswald'] text-lg sm:text-2xl font-bold tracking-wide uppercase text-white leading-tight">
                   NBA Live Command
                 </h1>
-                <span className="inline-flex items-center gap-1 rounded-full bg-emerald-500/20 border border-emerald-400/40 px-2.5 py-0.5 text-[10px] font-bold text-emerald-300">
+                <span className="inline-flex items-center gap-1 rounded-full bg-emerald-500/20 border border-emerald-400/40 px-2 py-0.5 text-[9px] sm:text-[10px] font-bold text-emerald-300 shrink-0">
                   <span className="h-1.5 w-1.5 rounded-full bg-emerald-400 animate-ping" />
                   LIVE FEED
                 </span>
               </div>
-              <p className="text-[11px] text-slate-400 hidden sm:block">
+              <p className="text-[11px] text-slate-400 hidden md:block">
                 Announcing Crews • Dynamic Court Shot Radar • Live NBA Scorigami Engine
               </p>
             </div>
           </div>
 
           {/* Center: Date Selector */}
-          <DateSelector
-            selectedDate={selectedDate}
-            onDateChange={(d) => setSelectedDate(d)}
-            onQuickSelect={handleQuickDateSelect}
-          />
+          <div className="order-3 lg:order-2 w-full lg:w-auto flex justify-center sm:justify-start lg:justify-center">
+            <DateSelector
+              selectedDate={selectedDate}
+              onDateChange={(d) => setSelectedDate(d)}
+              onQuickSelect={handleQuickDateSelect}
+            />
+          </div>
 
           {/* Right Controls: Auto-Poll Ticker, Audio, High Contrast, Modals */}
-          <div className="flex items-center gap-2">
+          <div className="order-2 lg:order-3 flex items-center gap-1.5 sm:gap-2 ml-auto lg:ml-0">
             {/* Last updated timestamp */}
-            <span className="hidden lg:inline text-[10px] font-mono text-slate-400">
+            <span className="hidden xl:inline text-[10px] font-mono text-slate-400">
               Synced {lastUpdated.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
             </span>
 
             {/* Switcher to NFL Dashboard */}
             <a
               href="https://martindavies-code.github.io/nfl-live-dashboard/"
-              className="hidden md:flex items-center gap-1 rounded-lg border border-white/[0.1] bg-white/[0.04] hover:bg-white/[0.08] hover:text-white px-2.5 py-1 text-xs font-semibold text-slate-300 transition-colors"
+              className="hidden sm:flex items-center gap-1 rounded-lg border border-white/[0.1] bg-white/[0.04] hover:bg-white/[0.08] hover:text-white px-2.5 py-1 text-xs font-semibold text-slate-300 transition-colors"
               title="Switch to NFL Live Command Center"
             >
               <span>🏈</span>
@@ -447,9 +449,9 @@ export const Dashboard: React.FC = () => {
         </div>
 
         {/* Filter Navigation & Search Bar Strip */}
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-2 flex flex-wrap items-center justify-between gap-3 border-t border-white/[0.04]">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-2 flex flex-col md:flex-row md:items-center justify-between gap-2.5 border-t border-white/[0.04]">
           {/* Filter Tabs */}
-          <div className="flex items-center gap-1 overflow-x-auto text-xs py-0.5">
+          <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar scroll-smooth py-1 w-full md:w-auto -mx-1 px-1">
             {[
               { id: 'all', label: 'All Matchups', count: tabCounts.all },
               { id: 'live', label: 'Live Now', count: tabCounts.live },
@@ -465,7 +467,7 @@ export const Dashboard: React.FC = () => {
                   setFilter(tab.id as GameFilter)
                   setSrAnnouncement(`Filter changed to ${tab.label}`)
                 }}
-                className={`flex items-center gap-1.5 px-3 py-1 rounded-lg font-semibold transition-colors shrink-0 ${
+                className={`flex items-center gap-1.5 px-3 py-1 rounded-lg font-semibold transition-colors shrink-0 text-xs ${
                   filter === tab.id
                     ? 'bg-orange-500 text-white shadow-sm shadow-orange-950'
                     : 'text-slate-400 hover:text-white hover:bg-white/[0.04]'
@@ -484,7 +486,7 @@ export const Dashboard: React.FC = () => {
           </div>
 
           {/* Search Input */}
-          <div className="relative flex items-center min-w-[200px] max-w-[280px] w-full sm:w-auto">
+          <div className="relative flex items-center w-full md:w-[220px] shrink-0">
             <Search className="absolute left-2.5 h-3.5 w-3.5 text-slate-400 pointer-events-none" />
             <input
               type="text"
@@ -517,15 +519,13 @@ export const Dashboard: React.FC = () => {
 
             {/* Scoreboard Grid Section */}
             <section className="space-y-4">
-              <div className="flex items-center justify-between border-b border-white/[0.08] pb-2">
-                <div className="flex items-center gap-2">
-                  <h2 className="font-['Oswald'] text-lg font-bold uppercase tracking-wider text-white">
-                    All Matchups ({filteredEvents.length})
-                  </h2>
-                  <span className="text-xs text-slate-400 font-mono">
-                    Click any matchup to spotlight on the court radar
-                  </span>
-                </div>
+              <div className="flex flex-col sm:flex-row sm:items-baseline sm:justify-between border-b border-white/[0.08] pb-2 gap-1">
+                <h2 className="font-['Oswald'] text-lg font-bold uppercase tracking-wider text-white">
+                  All Matchups ({filteredEvents.length})
+                </h2>
+                <span className="text-[11px] sm:text-xs text-slate-400 font-mono">
+                  Click any matchup to spotlight on the court radar
+                </span>
               </div>
 
               {filteredEvents.length > 0 ? (
