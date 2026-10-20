@@ -278,6 +278,16 @@ export const Dashboard: React.FC = () => {
 
           {/* Right Controls: Auto-Poll Ticker, Audio, High Contrast, Modals */}
           <div className="flex items-center gap-2">
+            {/* Switcher to NFL Dashboard */}
+            <a
+              href="https://martindavies-code.github.io/nfl-live-dashboard/"
+              className="hidden md:flex items-center gap-1 rounded-lg border border-white/[0.1] bg-white/[0.04] hover:bg-white/[0.08] hover:text-white px-2.5 py-1 text-xs font-semibold text-slate-300 transition-colors"
+              title="Switch to NFL Live Command Center"
+            >
+              <span>🏈</span>
+              <span>NFL Command</span>
+            </a>
+
             {/* Auto-poll Countdown Pill */}
             <div
               className="flex items-center gap-1.5 rounded-lg border border-white/[0.08] bg-black/40 px-2.5 py-1 text-xs font-mono text-slate-300"
