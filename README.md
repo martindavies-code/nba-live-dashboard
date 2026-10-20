@@ -1,5 +1,7 @@
 # 🏀 NBA Live Command Center
 
+🔗 **Live Demo:** [https://martindavies-code.github.io/nba-live-dashboard/](https://martindavies-code.github.io/nba-live-dashboard/)
+
 A real-time National Basketball Association (NBA) live scoreboard, dynamic interactive court shot radar, announcing crew directory, and NBA Scorigami novelty tracking dashboard built with **React 19**, **Vite**, **TypeScript**, and **Tailwind CSS v4**.
 
 Data is streamed directly via the [ESPN NBA Scoreboard API](https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard) with zero-dependency polling, visibility-based background pause, and offline resilience.
