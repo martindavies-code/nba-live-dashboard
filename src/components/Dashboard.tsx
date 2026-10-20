@@ -76,6 +76,39 @@ const AutoRefreshTicker: React.FC<AutoRefreshTickerProps> = memo(({
   )
 })
 
+/**
+ * Fast structural equality comparison to avoid triggering React reconciliation cycles
+ * when polling returns identical live game states, scores, and clocks.
+ */
+function areScoreboardsEqual(prev: NBAScoreboardData | null, next: NBAScoreboardData | null): boolean {
+  if (prev === next) return true
+  if (!prev || !next) return false
+  if (prev.events.length !== next.events.length) return false
+
+  for (let i = 0; i < prev.events.length; i++) {
+    const p = prev.events[i]
+    const n = next.events[i]
+    if (p.id !== n.id) return false
+    if (p.status?.clock !== n.status?.clock) return false
+    if (p.status?.period !== n.status?.period) return false
+    if (p.status?.displayClock !== n.status?.displayClock) return false
+    if (p.status?.type?.detail !== n.status?.type?.detail) return false
+    if (p.status?.type?.state !== n.status?.type?.state) return false
+
+    const pComp = p.competitions?.[0]
+    const nComp = n.competitions?.[0]
+    if (pComp?.situation?.possession !== nComp?.situation?.possession) return false
+    if (pComp?.situation?.shotClock !== nComp?.situation?.shotClock) return false
+
+    const pComps = pComp?.competitors
+    const nComps = nComp?.competitors
+    if ((pComps?.[0]?.score ?? '') !== (nComps?.[0]?.score ?? '')) return false
+    if ((pComps?.[1]?.score ?? '') !== (nComps?.[1]?.score ?? '')) return false
+  }
+
+  return true
+}
+
 export const Dashboard: React.FC = () => {
   const [data, setData] = useState<NBAScoreboardData | null>(null)
   const [isLoading, setIsLoading] = useState<boolean>(true)
@@ -113,7 +146,7 @@ export const Dashboard: React.FC = () => {
     }
   }, [])
 
-  // Fetch function with AbortController
+  // Fetch function with AbortController and unchanged data bailout
   const loadData = useCallback(async (isManual = false, overrideDate?: string) => {
     if (isManual) setIsRefreshing(true)
 
@@ -127,7 +160,7 @@ export const Dashboard: React.FC = () => {
 
     try {
       const result = await fetchNBAScoreboard(dateToFetch, controller.signal)
-      setData(result.data)
+      setData((prev) => (areScoreboardsEqual(prev, result.data) ? prev : result.data))
       setError(null)
     } catch (err: unknown) {
       if (err instanceof Error && err.name !== 'AbortError') {
@@ -225,14 +258,26 @@ export const Dashboard: React.FC = () => {
     })
   }, [events, filter, searchQuery])
 
-  // Filter tab counts
+  // Single-pass filter tab counts without intermediate array allocations
   const tabCounts = useMemo(() => {
+    let live = 0
+    let clutch = 0
+    let upcoming = 0
+    let final = 0
+    for (let i = 0; i < events.length; i++) {
+      const e = events[i]
+      const state = e.status?.type?.state
+      if (state === 'in') live++
+      else if (state === 'pre') upcoming++
+      else if (state === 'post') final++
+      if (isClutchGame(e.status, e.competitions?.[0]?.competitors)) clutch++
+    }
     return {
       all: events.length,
-      live: events.filter((e) => e.status?.type?.state === 'in').length,
-      clutch: events.filter((e) => isClutchGame(e.status, e.competitions?.[0]?.competitors)).length,
-      upcoming: events.filter((e) => e.status?.type?.state === 'pre').length,
-      final: events.filter((e) => e.status?.type?.state === 'post').length,
+      live,
+      clutch,
+      upcoming,
+      final,
     }
   }, [events])
 
@@ -248,9 +293,10 @@ export const Dashboard: React.FC = () => {
   }, [events, selectedHeroId])
 
   const handleSpotlight = useCallback(
-    (id: string, name: string) => {
+    (id?: string, name?: string) => {
+      if (!id) return
       setSelectedHeroId(id)
-      setSrAnnouncement(`Spotlighted ${name}`)
+      if (name) setSrAnnouncement(`Spotlighted ${name}`)
       if (!isMuted) playTactileClick()
     },
     [isMuted]
@@ -460,7 +506,7 @@ export const Dashboard: React.FC = () => {
                       key={ev.id}
                       event={ev}
                       isSpotlighted={ev.id === heroEvent?.id}
-                      onSpotlight={() => handleSpotlight(ev.id, ev.name)}
+                      onSpotlight={handleSpotlight}
                     />
                   ))}
                 </div>

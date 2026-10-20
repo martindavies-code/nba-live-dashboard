@@ -20,13 +20,21 @@ export interface NBAScorigamiInfo {
 
 // In-memory LRU cache for scorigami evaluations to prevent redundant loop calculations
 const SCORIGAMI_CACHE = new Map<string, NBAScorigamiInfo>()
-const MAX_CACHE_ENTRIES = 200
+const MAX_CACHE_ENTRIES = 300
+
+// Pre-indexed Set for O(1) lookup
+const HISTORICAL_KEYS = new Set(Object.keys(HISTORICAL_OCCURRED))
 
 /**
  * Creates canonical hi-lo score key safely.
  * Bounds all inputs to non-negative integers.
  */
 export function makeScoreKey(a: unknown, b: unknown): string {
+  if (typeof a === 'number' && typeof b === 'number' && Number.isFinite(a) && Number.isFinite(b)) {
+    const intA = Math.max(0, Math.floor(a))
+    const intB = Math.max(0, Math.floor(b))
+    return intA >= intB ? `${intA}-${intB}` : `${intB}-${intA}`
+  }
   const safeA = safeParseInt(a, 0, 0)
   const safeB = safeParseInt(b, 0, 0)
   const hi = Math.max(safeA, safeB)
@@ -39,7 +47,7 @@ export function makeScoreKey(a: unknown, b: unknown): string {
  */
 export function hasOccurred(a: unknown, b: unknown): boolean {
   const key = makeScoreKey(a, b)
-  return Object.prototype.hasOwnProperty.call(HISTORICAL_OCCURRED, key)
+  return HISTORICAL_KEYS.has(key)
 }
 
 /**
@@ -187,9 +195,13 @@ export function getScorigamiInfo(
     const projHome = safeHome + expAddPoints
     const projAway = safeAway + expAddPoints
 
-    // Efficiently search surrounding score combinations
-    for (let dh = -6; dh <= 14; dh++) {
+    // Efficiently search surrounding score combinations with distance branch pruning
+    outer: for (let dh = -6; dh <= 14; dh++) {
+      const absDh = Math.abs(dh)
       for (let da = -6; da <= 14; da++) {
+        if (bestNovelScore && (absDh + Math.abs(da)) >= bestNovelScore.dist) {
+          continue
+        }
         const h = Math.max(safeHome, projHome + dh)
         const a = Math.max(safeAway, projAway + da)
         if (h === a) continue // NBA games cannot end in a tie
@@ -198,6 +210,7 @@ export function getScorigamiInfo(
           const dist = Math.abs(h - projHome) + Math.abs(a - projAway)
           if (!bestNovelScore || dist < bestNovelScore.dist) {
             bestNovelScore = { hi: Math.max(h, a), lo: Math.min(h, a), dist }
+            if (dist <= 1) break outer // Cannot find closer candidate than Manhattan distance 1
           }
         }
       }

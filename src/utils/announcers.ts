@@ -559,22 +559,35 @@ export function resolveAnnouncingCrew(
   }
 }
 
+const CREW_LABEL_CACHE = new Map<string, string>()
+
 /**
  * Formats announcing crew into a concise badge label (e.g. 'Tirico & Hill', 'Eagle & Miller', 'Breen & Jefferson').
  */
 export function formatCrewShortLabel(playByPlay?: string, colorAnalyst?: string): string {
   if (!playByPlay) return ''
+  const cacheKey = `${playByPlay}::${colorAnalyst || ''}`
+  const cached = CREW_LABEL_CACHE.get(cacheKey)
+  if (cached !== undefined) return cached
+
   const pbpParts = playByPlay.trim().split(' ')
   const pbpLast = pbpParts[pbpParts.length - 1] || playByPlay
 
-  if (!colorAnalyst) return pbpLast
+  if (!colorAnalyst) {
+    if (CREW_LABEL_CACHE.size > 200) CREW_LABEL_CACHE.clear()
+    CREW_LABEL_CACHE.set(cacheKey, pbpLast)
+    return pbpLast
+  }
 
   // Extract primary color analyst name before '&' or '/'
   const primary = colorAnalyst.split('&')[0].split('/')[0].trim()
   const analystParts = primary.split(' ')
   const analystLast = analystParts[analystParts.length - 1] || primary
 
-  return `${pbpLast} & ${analystLast}`
+  const label = `${pbpLast} & ${analystLast}`
+  if (CREW_LABEL_CACHE.size > 200) CREW_LABEL_CACHE.clear()
+  CREW_LABEL_CACHE.set(cacheKey, label)
+  return label
 }
 
 function extractOfficials(

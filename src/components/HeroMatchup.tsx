@@ -1,4 +1,4 @@
-import React, { useState, memo } from 'react'
+import React, { useState, memo, useMemo } from 'react'
 import type { NBAEvent } from '../types/nba'
 import { CourtDiagram } from './CourtDiagram'
 import { WinProbabilityBar } from './WinProbabilityBar'
@@ -28,6 +28,31 @@ interface HeroMatchupProps {
   onSelectGame?: (id: string) => void
 }
 
+function areHeroPropsEqual(prev: HeroMatchupProps, next: HeroMatchupProps): boolean {
+  if (prev.event === next.event) return true
+  const p = prev.event
+  const n = next.event
+  if (p.id !== n.id) return false
+  if (p.status?.clock !== n.status?.clock) return false
+  if (p.status?.period !== n.status?.period) return false
+  if (p.status?.displayClock !== n.status?.displayClock) return false
+  if (p.status?.type?.detail !== n.status?.type?.detail) return false
+  if (p.status?.type?.state !== n.status?.type?.state) return false
+
+  const pComp = p.competitions?.[0]
+  const nComp = n.competitions?.[0]
+  if (pComp?.situation?.possession !== nComp?.situation?.possession) return false
+  if (pComp?.situation?.shotClock !== nComp?.situation?.shotClock) return false
+
+  const pComps = pComp?.competitors
+  const nComps = nComp?.competitors
+  if ((pComps?.[0]?.score ?? '') !== (nComps?.[0]?.score ?? '')) return false
+  if ((pComps?.[1]?.score ?? '') !== (nComps?.[1]?.score ?? '')) return false
+  if ((pComp?.shots?.length ?? 0) !== (nComp?.shots?.length ?? 0)) return false
+
+  return true
+}
+
 export const HeroMatchup: React.FC<HeroMatchupProps> = memo(({ event }) => {
   const [isCopied, setIsCopied] = useState<boolean>(false)
   const competition = event.competitions[0]
@@ -55,33 +80,40 @@ export const HeroMatchup: React.FC<HeroMatchupProps> = memo(({ event }) => {
   const homeAbbr = homeComp?.team?.abbreviation || 'Home'
   const awayAbbr = awayComp?.team?.abbreviation || 'Away'
 
-  const scorigamiInfo = getScorigamiInfo(
-    homeScore,
-    awayScore,
-    secondsRemaining,
-    state,
-    homeAbbr,
-    awayAbbr
-  )
+  const scorigamiInfo = useMemo(() => {
+    return getScorigamiInfo(
+      homeScore,
+      awayScore,
+      secondsRemaining,
+      state,
+      homeAbbr,
+      awayAbbr
+    )
+  }, [homeScore, awayScore, secondsRemaining, state, homeAbbr, awayAbbr])
 
-  const homeSpread = resolveHomeSpread(competition.odds, homeAbbr, awayAbbr)
-  const winProb = calculateWinProbability(
-    homeScore,
-    awayScore,
-    secondsRemaining,
-    state,
-    homeSpread,
-    situation
-      ? {
-          possession: situation.possession,
-          homeTeamId: homeComp?.team?.id,
-          awayTeamId: awayComp?.team?.id,
-          homeFouls: situation.homeFouls ?? homeComp?.fouls,
-          awayFouls: situation.awayFouls ?? awayComp?.fouls,
-          scoringRun: situation.scoringRun,
-        }
-      : null
-  )
+  const homeSpread = useMemo(() => {
+    return resolveHomeSpread(competition.odds, homeAbbr, awayAbbr)
+  }, [competition.odds, homeAbbr, awayAbbr])
+
+  const winProb = useMemo(() => {
+    return calculateWinProbability(
+      homeScore,
+      awayScore,
+      secondsRemaining,
+      state,
+      homeSpread,
+      situation
+        ? {
+            possession: situation.possession,
+            homeTeamId: homeComp?.team?.id,
+            awayTeamId: awayComp?.team?.id,
+            homeFouls: situation.homeFouls ?? homeComp?.fouls,
+            awayFouls: situation.awayFouls ?? awayComp?.fouls,
+            scoringRun: situation.scoringRun,
+          }
+        : null
+    )
+  }, [homeScore, awayScore, secondsRemaining, state, homeSpread, situation, homeComp?.team?.id, awayComp?.team?.id, homeComp?.fouls, awayComp?.fouls])
 
   const handleCopySnapshot = async () => {
     const awayName = awayComp?.team?.displayName || awayAbbr
@@ -172,6 +204,7 @@ export const HeroMatchup: React.FC<HeroMatchupProps> = memo(({ event }) => {
                   alt={awayComp?.team?.displayName || 'Away'}
                   className="h-12 w-12 sm:h-16 sm:w-16 object-contain drop-shadow-lg shrink-0"
                   loading="lazy"
+                  decoding="async"
                 />
                 <div className="min-w-0">
                   <div className="flex items-center gap-2 flex-wrap">
@@ -243,6 +276,7 @@ export const HeroMatchup: React.FC<HeroMatchupProps> = memo(({ event }) => {
                   alt={homeComp?.team?.displayName || 'Home'}
                   className="h-12 w-12 sm:h-16 sm:w-16 object-contain drop-shadow-lg shrink-0"
                   loading="lazy"
+                  decoding="async"
                 />
                 <div className="min-w-0">
                   <div className="flex items-center gap-2 flex-wrap md:justify-end">
@@ -461,4 +495,4 @@ export const HeroMatchup: React.FC<HeroMatchupProps> = memo(({ event }) => {
       </div>
     </section>
   )
-})
+}, areHeroPropsEqual)

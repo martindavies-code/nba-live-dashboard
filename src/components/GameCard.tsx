@@ -16,7 +16,33 @@ import { Tv, Sparkles, Maximize2, ShieldAlert } from 'lucide-react'
 interface GameCardProps {
   event: NBAEvent
   isSpotlighted?: boolean
-  onSpotlight?: () => void
+  onSpotlight?: (id?: string, name?: string) => void
+}
+
+function areGameCardPropsEqual(prev: GameCardProps, next: GameCardProps): boolean {
+  if (prev.isSpotlighted !== next.isSpotlighted) return false
+  if (prev.event === next.event) return true
+
+  const pEv = prev.event
+  const nEv = next.event
+  if (pEv.id !== nEv.id) return false
+  if (pEv.status?.clock !== nEv.status?.clock) return false
+  if (pEv.status?.period !== nEv.status?.period) return false
+  if (pEv.status?.displayClock !== nEv.status?.displayClock) return false
+  if (pEv.status?.type?.detail !== nEv.status?.type?.detail) return false
+  if (pEv.status?.type?.state !== nEv.status?.type?.state) return false
+
+  const pComp = pEv.competitions?.[0]
+  const nComp = nEv.competitions?.[0]
+  if (pComp?.situation?.possession !== nComp?.situation?.possession) return false
+  if (pComp?.situation?.shotClock !== nComp?.situation?.shotClock) return false
+
+  const pComps = pComp?.competitors
+  const nComps = nComp?.competitors
+  if ((pComps?.[0]?.score ?? '') !== (nComps?.[0]?.score ?? '')) return false
+  if ((pComps?.[1]?.score ?? '') !== (nComps?.[1]?.score ?? '')) return false
+
+  return true
 }
 
 export const GameCard: React.FC<GameCardProps> = memo(({
@@ -75,7 +101,8 @@ export const GameCard: React.FC<GameCardProps> = memo(({
 
   return (
     <article
-      onClick={onSpotlight}
+      onClick={() => onSpotlight?.(event.id, event.name)}
+      style={{ contentVisibility: 'auto', containIntrinsicSize: '0 230px' }}
       className={`group relative flex flex-col rounded-xl border transition-all duration-300 cursor-pointer overflow-hidden ${
         isSpotlighted
           ? 'border-orange-500/80 bg-[#0e172c] shadow-xl shadow-orange-950/40 ring-1 ring-orange-500/60'
@@ -119,7 +146,7 @@ export const GameCard: React.FC<GameCardProps> = memo(({
             <button
               onClick={(e) => {
                 e.stopPropagation()
-                onSpotlight()
+                onSpotlight(event.id, event.name)
               }}
               className="flex items-center gap-1 rounded bg-slate-800 hover:bg-orange-600 hover:text-white px-2 py-0.5 text-[10px] font-semibold text-slate-200 transition-colors border border-white/[0.1]"
               title="Pin matchup to Spotlight Hero"
@@ -141,6 +168,7 @@ export const GameCard: React.FC<GameCardProps> = memo(({
               alt={awayComp?.team?.displayName || 'Away'}
               className="h-7 w-7 object-contain"
               loading="lazy"
+              decoding="async"
             />
             <div>
               <div className="flex items-center gap-1.5">
@@ -167,6 +195,7 @@ export const GameCard: React.FC<GameCardProps> = memo(({
               alt={homeComp?.team?.displayName || 'Home'}
               className="h-7 w-7 object-contain"
               loading="lazy"
+              decoding="async"
             />
             <div>
               <div className="flex items-center gap-1.5">
@@ -227,4 +256,4 @@ export const GameCard: React.FC<GameCardProps> = memo(({
       </div>
     </article>
   )
-})
+}, areGameCardPropsEqual)

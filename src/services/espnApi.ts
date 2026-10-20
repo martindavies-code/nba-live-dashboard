@@ -23,6 +23,7 @@ interface CacheEntry {
 // Multi-date LRU Cache with TTL to eliminate redundant network queries
 const SCOREBOARD_CACHE = new Map<string, CacheEntry>()
 const MAX_CACHE_ENTRIES = 15
+const IN_FLIGHT_REQUESTS = new Map<string, Promise<FetchNBAScoreboardResult>>()
 
 /**
  * Validates and sanitizes date string into YYYYMMDD format.
@@ -45,6 +46,7 @@ export function sanitizeDateParam(dateStr?: unknown): string | null {
  */
 export function clearScoreboardCache(): void {
   SCOREBOARD_CACHE.clear()
+  IN_FLIGHT_REQUESTS.clear()
 }
 
 /**
@@ -101,7 +103,7 @@ function enrichEvents(rawEvents: unknown[]): NBAEvent[] {
   return enriched
 }
 
-export async function fetchNBAScoreboard(
+export function fetchNBAScoreboard(
   dateStr?: string,
   signal?: AbortSignal
 ): Promise<FetchNBAScoreboardResult> {
@@ -112,100 +114,120 @@ export async function fetchNBAScoreboard(
   // 1. Check in-memory cache
   const cached = SCOREBOARD_CACHE.get(cacheKey)
   if (cached && Date.now() < cached.expiresAt) {
-    return {
+    return Promise.resolve({
       data: cached.data,
       sourceId: 'client-cache',
       sourceName: 'Cached NBA Scoreboard Feed',
       responseTimeMs: 0,
       isCached: true,
       cachedTimestamp: cached.timestamp,
-    }
+    })
   }
 
-  const url = new URL(ESPN_NBA_SCOREBOARD_URL)
-  if (sanitizedDate) {
-    url.searchParams.set('dates', sanitizedDate)
+  // 2. Reuse in-flight network request if already active (when no custom signal)
+  if (!signal) {
+    const inFlight = IN_FLIGHT_REQUESTS.get(cacheKey)
+    if (inFlight) return inFlight
   }
 
-  try {
-    const response = await fetch(url.toString(), {
-      signal,
-      headers: {
-        Accept: 'application/json',
-      },
-    })
-
-    if (!response.ok) {
-      throw new Error(`ESPN NBA API returned ${response.status}`)
+  const executeFetch = async (): Promise<FetchNBAScoreboardResult> => {
+    const url = new URL(ESPN_NBA_SCOREBOARD_URL)
+    if (sanitizedDate) {
+      url.searchParams.set('dates', sanitizedDate)
     }
 
-    const rawData = await response.json()
-    if (!rawData || typeof rawData !== 'object') {
-      throw new Error('Invalid JSON response structure from ESPN NBA API')
-    }
+    try {
+      const response = await fetch(url.toString(), {
+        signal,
+        headers: {
+          Accept: 'application/json',
+        },
+      })
 
-    const rawEvents = Array.isArray(rawData.events) ? rawData.events : []
-    const enriched = enrichEvents(rawEvents)
+      if (!response.ok) {
+        throw new Error(`ESPN NBA API returned ${response.status}`)
+      }
 
-    const scoreboard: NBAScoreboardData = {
-      events: enriched.length > 0 ? enriched : MOCK_NBA_EVENTS,
-      day: rawData.day,
-      season: rawData.season,
-    }
+      const rawData = await response.json()
+      if (!rawData || typeof rawData !== 'object') {
+        throw new Error('Invalid JSON response structure from ESPN NBA API')
+      }
 
-    // TTL Policy: Live games refresh every 10s; completed/pre-game slates cache for 5 minutes
-    const hasLiveGames = scoreboard.events.some((e) => e.status?.type?.state === 'in')
-    const ttlMs = hasLiveGames ? 10_000 : 300_000
+      const rawEvents = Array.isArray(rawData.events) ? rawData.events : []
+      const enriched = enrichEvents(rawEvents)
 
-    if (SCOREBOARD_CACHE.size >= MAX_CACHE_ENTRIES) {
-      const oldestKey = SCOREBOARD_CACHE.keys().next().value
-      if (oldestKey) SCOREBOARD_CACHE.delete(oldestKey)
-    }
+      const scoreboard: NBAScoreboardData = {
+        events: enriched.length > 0 ? enriched : MOCK_NBA_EVENTS,
+        day: rawData.day,
+        season: rawData.season,
+      }
 
-    const timestamp = new Date().toISOString()
-    SCOREBOARD_CACHE.set(cacheKey, {
-      data: scoreboard,
-      timestamp,
-      expiresAt: Date.now() + ttlMs,
-    })
+      // TTL Policy: Live games refresh every 10s; completed/pre-game slates cache for 5 minutes
+      const hasLiveGames = scoreboard.events.some((e) => e.status?.type?.state === 'in')
+      const ttlMs = hasLiveGames ? 10_000 : 300_000
 
-    return {
-      data: scoreboard,
-      sourceId: 'espn-api',
-      sourceName: 'ESPN NBA Core Feed (Live CDN)',
-      responseTimeMs: Math.round(performance.now() - startTime),
-      isCached: false,
-    }
-  } catch (err: unknown) {
-    // If aborted, rethrow
-    if (err instanceof Error && err.name === 'AbortError') {
-      throw err
-    }
+      if (SCOREBOARD_CACHE.size >= MAX_CACHE_ENTRIES) {
+        const oldestKey = SCOREBOARD_CACHE.keys().next().value
+        if (oldestKey) SCOREBOARD_CACHE.delete(oldestKey)
+      }
 
-    // Fallback to cached (even if expired) or rich mock data
-    if (cached) {
+      const timestamp = new Date().toISOString()
+      SCOREBOARD_CACHE.set(cacheKey, {
+        data: scoreboard,
+        timestamp,
+        expiresAt: Date.now() + ttlMs,
+      })
+
       return {
-        data: cached.data,
-        sourceId: 'client-cache-stale',
-        sourceName: 'Cached NBA Scoreboard View (Stale)',
+        data: scoreboard,
+        sourceId: 'espn-api',
+        sourceName: 'ESPN NBA Core Feed (Live CDN)',
+        responseTimeMs: Math.round(performance.now() - startTime),
+        isCached: false,
+      }
+    } catch (err: unknown) {
+      // If aborted, rethrow
+      if (err instanceof Error && err.name === 'AbortError') {
+        throw err
+      }
+
+      // Fallback to cached (even if expired) or rich mock data
+      if (cached) {
+        return {
+          data: cached.data,
+          sourceId: 'client-cache-stale',
+          sourceName: 'Cached NBA Scoreboard View (Stale)',
+          responseTimeMs: Math.round(performance.now() - startTime),
+          isCached: true,
+          cachedTimestamp: cached.timestamp,
+        }
+      }
+
+      return {
+        data: {
+          events: MOCK_NBA_EVENTS,
+          day: { date: new Date().toISOString().slice(0, 10).replace(/-/g, '') },
+          season: { type: 2, year: 2026 },
+        },
+        sourceId: 'mock-redundancy',
+        sourceName: 'NBA Emergency Redundant Fallback Matrix',
         responseTimeMs: Math.round(performance.now() - startTime),
         isCached: true,
-        cachedTimestamp: cached.timestamp,
       }
     }
-
-    return {
-      data: {
-        events: MOCK_NBA_EVENTS,
-        day: { date: new Date().toISOString().slice(0, 10).replace(/-/g, '') },
-        season: { type: 2, year: 2026 },
-      },
-      sourceId: 'mock-redundancy',
-      sourceName: 'NBA Emergency Redundant Fallback Matrix',
-      responseTimeMs: Math.round(performance.now() - startTime),
-      isCached: true,
-    }
   }
+
+  const fetchPromise = executeFetch().finally(() => {
+    if (!signal) {
+      IN_FLIGHT_REQUESTS.delete(cacheKey)
+    }
+  })
+
+  if (!signal) {
+    IN_FLIGHT_REQUESTS.set(cacheKey, fetchPromise)
+  }
+
+  return fetchPromise
 }
 
 // -----------------------------------------------------------------------------
