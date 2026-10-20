@@ -9,6 +9,7 @@ import {
   calculateWinProbability,
   sanitizeImageUrl,
 } from '../utils/nbaHelpers'
+import { formatCrewShortLabel } from '../utils/announcers'
 import { Tv, Sparkles, Maximize2, ShieldAlert } from 'lucide-react'
 
 interface GameCardProps {
@@ -190,7 +191,7 @@ export const GameCard: React.FC<GameCardProps> = memo(({
 
           {crew?.playByPlay && (
             <span className="truncate max-w-[170px] text-slate-400" title={`${crew.playByPlay} & ${crew.colorAnalyst}`}>
-              🎙️ {crew.playByPlay.split(' ')[1] || crew.playByPlay} & {crew.colorAnalyst.split(' ')[1] || crew.colorAnalyst}
+              🎙️ {formatCrewShortLabel(crew.playByPlay, crew.colorAnalyst)}
             </span>
           )}
         </div>

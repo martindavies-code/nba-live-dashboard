@@ -9,19 +9,20 @@ export interface CrewDetails {
 }
 
 // National Broadcast Announcing Crews (ESPN/ABC, TNT Sports, NBC/Peacock, NBA TV, Prime Video)
+// Fact-checked against the 2025-2026 NBA media rights distribution roster
 export const NATIONAL_CREWS: Record<string, CrewDetails[]> = {
   ABC: [
     {
       networkName: 'ABC',
       playByPlay: 'Mike Breen',
-      colorAnalyst: 'Doris Burke & Richard Jefferson',
+      colorAnalyst: 'Richard Jefferson & Tim Legler',
       sidelineReporter: 'Lisa Salters',
       radio: 'ESPN Radio (Marc Kestecher & PJ Carlesimo)',
     },
     {
       networkName: 'ABC',
       playByPlay: 'Ryan Ruocco',
-      colorAnalyst: 'JJ Redick & Tim Legler',
+      colorAnalyst: 'Doris Burke & JJ Redick',
       sidelineReporter: 'Cassidy Hubbarth',
       radio: 'ESPN Radio',
     },
@@ -30,15 +31,22 @@ export const NATIONAL_CREWS: Record<string, CrewDetails[]> = {
     {
       networkName: 'ESPN',
       playByPlay: 'Mike Breen',
-      colorAnalyst: 'Doris Burke & Richard Jefferson',
+      colorAnalyst: 'Richard Jefferson & Tim Legler',
       sidelineReporter: 'Lisa Salters',
-      radio: 'ESPN Radio',
+      radio: 'ESPN Radio (Marc Kestecher & PJ Carlesimo)',
     },
     {
       networkName: 'ESPN',
       playByPlay: 'Dave Pasch',
-      colorAnalyst: 'Hubie Brown',
+      colorAnalyst: 'Doris Burke',
       sidelineReporter: 'Katie George',
+      radio: 'ESPN Radio',
+    },
+    {
+      networkName: 'ESPN',
+      playByPlay: 'Ryan Ruocco',
+      colorAnalyst: 'JJ Redick & Richard Jefferson',
+      sidelineReporter: 'Cassidy Hubbarth',
       radio: 'ESPN Radio',
     },
     {
@@ -55,24 +63,33 @@ export const NATIONAL_CREWS: Record<string, CrewDetails[]> = {
       playByPlay: 'Kevin Harlan',
       colorAnalyst: 'Reggie Miller & Stan Van Gundy',
       sidelineReporter: 'Allie LaForce',
-      radio: 'TNT Radio / Westwood One',
+      radio: 'TNT Radio / Westwood One Sports',
     },
     {
       networkName: 'TNT Sports',
       playByPlay: 'Brian Anderson',
       colorAnalyst: 'Grant Hill & Jim Jackson',
       sidelineReporter: 'Jared Greenberg',
-      radio: 'Westwood One',
+      radio: 'Westwood One Sports',
     },
     {
       networkName: 'TNT Sports',
       playByPlay: 'Spero Dedes',
-      colorAnalyst: 'Greg Anthony',
+      colorAnalyst: 'Greg Anthony & Candace Parker',
       sidelineReporter: 'Lauren Jbara',
-      radio: 'Westwood One',
+      radio: 'Westwood One Sports',
     },
   ],
   NBC: [
+    // NBC Lead Crew #1: Marquee Primetime 7 PM / 8 PM Window
+    {
+      networkName: 'NBC Sports',
+      playByPlay: 'Mike Tirico',
+      colorAnalyst: 'Grant Hill',
+      sidelineReporter: 'Maria Taylor',
+      radio: 'NBC Sports Audio (Chris Simms & Terry McAulay)',
+    },
+    // NBC Primetime Crew #2: Doubleheader Late 9:30 PM / 10 PM Window
     {
       networkName: 'NBC Sports',
       playByPlay: 'Noah Eagle',
@@ -80,20 +97,35 @@ export const NATIONAL_CREWS: Record<string, CrewDetails[]> = {
       sidelineReporter: 'Zora Stephenson',
       radio: 'NBC Sports Audio',
     },
+    // NBC Showcase Crew #3: Afternoon / Matinee Window
     {
       networkName: 'NBC Sports',
-      playByPlay: 'Mike Tirico',
-      colorAnalyst: 'Grant Hill',
-      sidelineReporter: 'Maria Taylor',
+      playByPlay: 'Terry Gannon',
+      colorAnalyst: 'Brad Daugherty & Austin Rivers',
+      sidelineReporter: 'Ahmed Fareed',
+      radio: 'NBC Sports Audio',
+    },
+    // NBC / Peacock Crew #4: Alternate National Window
+    {
+      networkName: 'Peacock',
+      playByPlay: 'Michael Grady',
+      colorAnalyst: 'Derek Fisher',
+      sidelineReporter: 'Jordan Cornette',
       radio: 'NBC Sports Audio',
     },
   ],
   PEACOCK: [
     {
       networkName: 'Peacock',
-      playByPlay: 'Noah Eagle',
-      colorAnalyst: 'Reggie Miller',
-      sidelineReporter: 'Zora Stephenson',
+      playByPlay: 'Terry Gannon',
+      colorAnalyst: 'Brad Daugherty',
+      sidelineReporter: 'Ahmed Fareed',
+    },
+    {
+      networkName: 'Peacock',
+      playByPlay: 'Michael Grady',
+      colorAnalyst: 'Derek Fisher',
+      sidelineReporter: 'Jordan Cornette',
     },
   ],
   'PRIME VIDEO': [
@@ -102,6 +134,18 @@ export const NATIONAL_CREWS: Record<string, CrewDetails[]> = {
       playByPlay: 'Ian Eagle',
       colorAnalyst: 'Stan Van Gundy',
       sidelineReporter: 'Taylor Rooks',
+    },
+    {
+      networkName: 'Prime Video',
+      playByPlay: 'Kevin Harlan',
+      colorAnalyst: 'Brent Barry',
+      sidelineReporter: 'Allie LaForce',
+    },
+    {
+      networkName: 'Prime Video',
+      playByPlay: 'Michael Grady',
+      colorAnalyst: 'Jim Jackson',
+      sidelineReporter: 'Tom Haberstroh',
     },
   ],
   'NBA TV': [
@@ -117,7 +161,32 @@ export const NATIONAL_CREWS: Record<string, CrewDetails[]> = {
       colorAnalyst: 'Brendan Haywood',
       sidelineReporter: 'Dennis Scott',
     },
+    {
+      networkName: 'NBA TV',
+      playByPlay: 'Spero Dedes',
+      colorAnalyst: 'Greg Anthony',
+      sidelineReporter: 'Jared Greenberg',
+    },
   ],
+}
+
+// Normalization map for team abbreviations from various API feeds (e.g. ESPN uses NY for NYK, SA for SAS)
+export const TEAM_ABBR_MAP: Record<string, string> = {
+  NY: 'NYK',
+  SA: 'SAS',
+  GS: 'GSW',
+  NO: 'NOP',
+  UTAH: 'UTA',
+  WSH: 'WAS',
+  PHX: 'PHX',
+  PHO: 'PHX',
+  BK: 'BKN',
+}
+
+export function normalizeTeamAbbr(abbr?: unknown): string {
+  if (typeof abbr !== 'string') return ''
+  const upper = abbr.trim().toUpperCase()
+  return TEAM_ABBR_MAP[upper] || upper
 }
 
 // Franchise Local Regional Sports Network Crews (All 30 Teams)
@@ -356,13 +425,21 @@ export const NOTABLE_OFFICIALS: Array<{ name: string; role: string }> = [
   { name: 'Natalie Sago', role: 'Umpire (#9)' },
 ]
 
+export interface ResolveCrewOptions {
+  gameDate?: string
+  gameIndex?: number
+  assignedCrews?: Set<string>
+}
+
 /**
  * Resolves the broadcast network, announcing crew, and officiating crew for an NBA competition.
+ * Eliminates duplicate crew collisions across the same slate by tracking assigned crews and game windows.
  */
 export function resolveAnnouncingCrew(
   competition?: Partial<NBACompetition> | null,
   homeTeamAbbr: unknown = '',
-  awayTeamAbbr: unknown = ''
+  awayTeamAbbr: unknown = '',
+  options?: ResolveCrewOptions | number
 ): NBAAnnouncingCrew {
   const broadcasts = Array.isArray(competition?.broadcasts) ? competition.broadcasts : []
   const rawNetwork = typeof broadcasts[0]?.names?.[0] === 'string' && broadcasts[0].names[0].trim()
@@ -370,26 +447,75 @@ export function resolveAnnouncingCrew(
     : 'NBA League Pass'
   const netUpper = rawNetwork.toUpperCase()
 
-  const safeHome = typeof homeTeamAbbr === 'string' ? homeTeamAbbr.trim().toUpperCase() : ''
-  const safeAway = typeof awayTeamAbbr === 'string' ? awayTeamAbbr.trim().toUpperCase() : ''
+  const safeHome = normalizeTeamAbbr(homeTeamAbbr)
+  const safeAway = normalizeTeamAbbr(awayTeamAbbr)
 
-  // Match National Crew
+  const opts: ResolveCrewOptions = typeof options === 'number'
+    ? { gameIndex: options }
+    : options || {}
+  const assigned = opts.assignedCrews
+  const gameIndex = typeof opts.gameIndex === 'number' ? opts.gameIndex : 0
+  const dateStr = competition?.date || opts.gameDate
+
+  // Determine game window index based on UTC start time:
+  // e.g. 23:00 UTC (7 PM EDT) -> Primetime Game 1 (crew index 0)
+  // e.g. 01:30 UTC (9:30 PM EDT) -> Late Primetime Doubleheader (crew index 1)
+  // e.g. 19:00 UTC (3 PM EDT) -> Afternoon / Matinee (crew index 2)
+  let windowIndex = -1
+  if (dateStr) {
+    try {
+      const d = new Date(dateStr)
+      if (!isNaN(d.getTime())) {
+        const h = d.getUTCHours()
+        if (h >= 22 || h === 0) {
+          windowIndex = 0 // Primetime 7-8 PM EDT
+        } else if (h >= 1 && h <= 5) {
+          windowIndex = 1 // Late primetime 9-11 PM EDT
+        } else if (h >= 17 && h <= 21) {
+          windowIndex = 2 // Afternoon 1-5 PM EDT
+        }
+      }
+    } catch {}
+  }
+
+  // 1. Match National Crew with Slate Conflict Resolution
   for (const [key, crews] of Object.entries(NATIONAL_CREWS)) {
     if (netUpper.includes(key) && crews.length > 0) {
-      const selected = crews[0]
+      let candidate: CrewDetails | undefined
+
+      // Attempt to pick by time window first if that crew hasn't already been assigned
+      if (
+        windowIndex >= 0 &&
+        windowIndex < crews.length &&
+        !assigned?.has(crews[windowIndex].playByPlay)
+      ) {
+        candidate = crews[windowIndex]
+      } else {
+        // Otherwise pick the next available unassigned crew from this network's depth chart
+        candidate = crews.find((c) => !assigned?.has(c.playByPlay))
+      }
+
+      // If all crews in depth chart have already been assigned, round-robin by gameIndex
+      if (!candidate) {
+        candidate = crews[gameIndex % crews.length]
+      }
+
+      // Mark this crew as assigned so no other game today is double-booked
+      assigned?.add(candidate.playByPlay)
+
       return {
-        network: selected.networkName,
+        network: candidate.networkName,
         market: 'National',
-        playByPlay: selected.playByPlay,
-        colorAnalyst: selected.colorAnalyst,
-        sidelineReporter: selected.sidelineReporter,
-        radioNetwork: selected.radio,
+        playByPlay: candidate.playByPlay,
+        colorAnalyst: candidate.colorAnalyst,
+        sidelineReporter: candidate.sidelineReporter,
+        radioNetwork: candidate.radio,
         officials: extractOfficials(competition?.officials, safeHome),
       }
     }
   }
 
-  // Match Home Team Local RSN Crew
+  // 2. Match Home Team Local RSN Crew
   if (safeHome && Object.prototype.hasOwnProperty.call(TEAM_LOCAL_CREWS, safeHome)) {
     const homeCrew = TEAM_LOCAL_CREWS[safeHome]
     if (homeCrew) {
@@ -405,7 +531,7 @@ export function resolveAnnouncingCrew(
     }
   }
 
-  // Match Away Team Crew Fallback
+  // 3. Match Away Team Crew Fallback
   if (safeAway && Object.prototype.hasOwnProperty.call(TEAM_LOCAL_CREWS, safeAway)) {
     const awayCrew = TEAM_LOCAL_CREWS[safeAway]
     if (awayCrew) {
@@ -421,7 +547,7 @@ export function resolveAnnouncingCrew(
     }
   }
 
-  // Default Standard Crew
+  // 4. Default Standard Crew
   return {
     network: rawNetwork,
     market: 'Regional / League Pass',
@@ -431,6 +557,24 @@ export function resolveAnnouncingCrew(
     radioNetwork: 'Team Radio Network',
     officials: extractOfficials(competition?.officials, safeHome),
   }
+}
+
+/**
+ * Formats announcing crew into a concise badge label (e.g. 'Tirico & Hill', 'Eagle & Miller', 'Breen & Jefferson').
+ */
+export function formatCrewShortLabel(playByPlay?: string, colorAnalyst?: string): string {
+  if (!playByPlay) return ''
+  const pbpParts = playByPlay.trim().split(' ')
+  const pbpLast = pbpParts[pbpParts.length - 1] || playByPlay
+
+  if (!colorAnalyst) return pbpLast
+
+  // Extract primary color analyst name before '&' or '/'
+  const primary = colorAnalyst.split('&')[0].split('/')[0].trim()
+  const analystParts = primary.split(' ')
+  const analystLast = analystParts[analystParts.length - 1] || primary
+
+  return `${pbpLast} & ${analystLast}`
 }
 
 function extractOfficials(

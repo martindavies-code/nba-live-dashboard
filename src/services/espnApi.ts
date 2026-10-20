@@ -49,12 +49,16 @@ export function clearScoreboardCache(): void {
 
 /**
  * Immutably enriches and sanitizes raw NBA events from external feed.
+ * Tracks assigned crews across the entire slate so no two games share the same broadcast crew.
  */
 function enrichEvents(rawEvents: unknown[]): NBAEvent[] {
   if (!Array.isArray(rawEvents)) return []
 
+  const assignedCrews = new Set<string>()
   const enriched: NBAEvent[] = []
-  for (const raw of rawEvents) {
+
+  for (let idx = 0; idx < rawEvents.length; idx++) {
+    const raw = rawEvents[idx]
     if (!raw || typeof raw !== 'object') continue
     const ev = raw as NBAEvent
 
@@ -73,7 +77,12 @@ function enrichEvents(rawEvents: unknown[]): NBAEvent[] {
       const crew = resolveAnnouncingCrew(
         comp,
         homeComp?.team?.abbreviation,
-        awayComp?.team?.abbreviation
+        awayComp?.team?.abbreviation,
+        {
+          gameDate: ev.date || comp.date,
+          gameIndex: idx,
+          assignedCrews,
+        }
       )
 
       return {
