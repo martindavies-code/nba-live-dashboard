@@ -9,7 +9,9 @@ import {
   playWhistleSound,
   playTactileClick,
 } from '../utils/audioFeedback'
-import { KeyboardShortcutsModal } from './KeyboardShortcutsModal'
+const KeyboardShortcutsModal = React.lazy(() =>
+  import('./KeyboardShortcutsModal').then((m) => ({ default: m.KeyboardShortcutsModal }))
+)
 import {
   RefreshCw,
   Search,
@@ -127,8 +129,14 @@ export const Dashboard: React.FC = () => {
   const [isShortcutsOpen, setIsShortcutsOpen] = useState<boolean>(false)
   const [srAnnouncement, setSrAnnouncement] = useState<string>('')
 
+  const selectedDateRef = useRef(selectedDate)
+  const isMutedRef = useRef(isMuted)
   const abortControllerRef = useRef<AbortController | null>(null)
   const loadDataRef = useRef<((isManual?: boolean, overrideDate?: string) => void) | null>(null)
+
+  useEffect(() => {
+    isMutedRef.current = isMuted
+  }, [isMuted])
 
   // Online / Offline Detection
   useEffect(() => {
@@ -156,7 +164,7 @@ export const Dashboard: React.FC = () => {
     const controller = new AbortController()
     abortControllerRef.current = controller
 
-    const dateToFetch = overrideDate ?? selectedDate
+    const dateToFetch = overrideDate ?? selectedDateRef.current
 
     try {
       const result = await fetchNBAScoreboard(dateToFetch, controller.signal)
@@ -170,16 +178,22 @@ export const Dashboard: React.FC = () => {
       setIsLoading(false)
       setIsRefreshing(false)
     }
-  }, [selectedDate])
+  }, [])
 
   useEffect(() => {
     loadDataRef.current = loadData
   }, [loadData])
 
+  // Memoized auto-refresh handler preventing AutoRefreshTicker memo invalidation
+  const handleAutoRefresh = useCallback(() => {
+    loadDataRef.current?.(false)
+  }, [])
+
   // Initial load & Date change reload
   useEffect(() => {
-    loadData(true)
-  }, [loadData, selectedDate])
+    selectedDateRef.current = selectedDate
+    loadData(true, selectedDate)
+  }, [selectedDate, loadData])
 
   // Cleanup pending network request on unmount
   useEffect(() => {
@@ -188,16 +202,21 @@ export const Dashboard: React.FC = () => {
     }
   }, [])
 
-  // Handle Quick Date Select (delta days)
+  // Handle Quick Date Select (delta days) with NaN guard and timezone stability
   const handleQuickDateSelect = useCallback((deltaDays: number) => {
-    const current = new Date(selectedDate)
-    current.setDate(current.getDate() + deltaDays)
-    const nextStr = current.toISOString().slice(0, 10)
-    setSelectedDate(nextStr)
-    setSrAnnouncement(`Navigated to date ${nextStr}`)
-  }, [selectedDate])
+    setSelectedDate((prevDate) => {
+      let current = new Date(prevDate)
+      if (isNaN(current.getTime())) {
+        current = new Date()
+      }
+      current.setDate(current.getDate() + deltaDays)
+      const nextStr = current.toISOString().slice(0, 10)
+      setSrAnnouncement(`Navigated to date ${nextStr}`)
+      return nextStr
+    })
+  }, [])
 
-  // Keyboard Shortcuts Handler
+  // Keyboard Shortcuts Handler - uses stable refs so registered once on mount
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (['INPUT', 'TEXTAREA'].includes((e.target as HTMLElement)?.tagName)) return
@@ -215,8 +234,8 @@ export const Dashboard: React.FC = () => {
         })
       } else if (e.key === ' ' || e.code === 'Space') {
         e.preventDefault()
-        if (!isMuted) playTactileClick()
-        loadData(true)
+        if (!isMutedRef.current) playTactileClick()
+        loadDataRef.current?.(true)
       } else if (e.key === '1') setFilter('all')
       else if (e.key === '2') setFilter('live')
       else if (e.key === '3') setFilter('clutch')
@@ -226,7 +245,7 @@ export const Dashboard: React.FC = () => {
 
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [isMuted, loadData])
+  }, [])
 
   // Filtered Events with memoization
   const events = useMemo(() => data?.events || [], [data?.events])

@@ -17,6 +17,18 @@ export class ErrorBoundary extends Component<Props, State> {
     return { hasError: true, error }
   }
 
+  public override componentDidCatch(error: Error, errorInfo: React.ErrorInfo): void {
+    // Isolated error containment preventing uncaught rejections from crashing the tab
+    if (import.meta.env?.DEV) {
+      // eslint-disable-next-line no-console
+      console.error('Unhandled UI exception caught by ErrorBoundary:', error, errorInfo)
+    }
+  }
+
+  private handleReset = (): void => {
+    this.setState({ hasError: false, error: undefined })
+  }
+
   public override render() {
     if (this.state.hasError) {
       return (
@@ -24,16 +36,24 @@ export class ErrorBoundary extends Component<Props, State> {
           <div className="rounded-2xl border border-rose-500/40 bg-rose-950/30 p-8 max-w-md space-y-4">
             <AlertTriangle className="h-10 w-10 text-rose-400 mx-auto" />
             <h2 className="text-lg font-bold text-white">Dashboard Encountered an Error</h2>
-            <p className="text-xs text-rose-200/80 leading-relaxed">
+            <p className="text-xs text-rose-200/80 leading-relaxed font-mono">
               {this.state.error?.message || 'An unexpected rendering error occurred.'}
             </p>
-            <button
-              onClick={() => window.location.reload()}
-              className="inline-flex items-center gap-2 rounded-lg bg-rose-600 hover:bg-rose-500 px-4 py-2 text-xs font-bold text-white shadow-lg transition-colors"
-            >
-              <RefreshCw className="h-3.5 w-3.5" />
-              Reload Dashboard
-            </button>
+            <div className="flex items-center justify-center gap-3 pt-2">
+              <button
+                onClick={this.handleReset}
+                className="inline-flex items-center gap-1.5 rounded-lg bg-orange-600 hover:bg-orange-500 px-3.5 py-1.5 text-xs font-bold text-white shadow-lg transition-colors"
+              >
+                <RefreshCw className="h-3.5 w-3.5" />
+                Retry Render
+              </button>
+              <button
+                onClick={() => window.location.reload()}
+                className="inline-flex items-center gap-1.5 rounded-lg bg-white/[0.08] hover:bg-white/[0.15] border border-white/[0.15] px-3.5 py-1.5 text-xs font-semibold text-slate-200 hover:text-white transition-colors"
+              >
+                Reload Page
+              </button>
+            </div>
           </div>
         </div>
       )

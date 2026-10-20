@@ -2,9 +2,23 @@ import { useEffect, useRef } from 'react'
 
 export function useFocusTrap(isOpen: boolean, onClose: () => void) {
   const ref = useRef<HTMLDivElement>(null)
+  const previousActiveElement = useRef<HTMLElement | null>(null)
 
   useEffect(() => {
     if (!isOpen) return
+
+    if (typeof document !== 'undefined') {
+      previousActiveElement.current = document.activeElement as HTMLElement | null
+    }
+
+    const timer = setTimeout(() => {
+      if (ref.current) {
+        const first = ref.current.querySelector<HTMLElement>(
+          'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
+        )
+        first?.focus()
+      }
+    }, 20)
 
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
@@ -32,7 +46,13 @@ export function useFocusTrap(isOpen: boolean, onClose: () => void) {
     }
 
     window.addEventListener('keydown', handleKeyDown)
-    return () => window.removeEventListener('keydown', handleKeyDown)
+    return () => {
+      clearTimeout(timer)
+      window.removeEventListener('keydown', handleKeyDown)
+      if (previousActiveElement.current && typeof previousActiveElement.current.focus === 'function') {
+        previousActiveElement.current.focus()
+      }
+    }
   }, [isOpen, onClose])
 
   return ref

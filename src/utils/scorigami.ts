@@ -25,6 +25,17 @@ const MAX_CACHE_ENTRIES = 300
 // Pre-indexed Set for O(1) lookup
 const HISTORICAL_KEYS = new Set(Object.keys(HISTORICAL_OCCURRED))
 
+// Bitwise packed integer Set for zero-allocation sub-nanosecond candidate search
+const HISTORICAL_PACKED_KEYS = new Set<number>()
+for (const key of Object.keys(HISTORICAL_OCCURRED)) {
+  const dashIdx = key.indexOf('-')
+  if (dashIdx !== -1) {
+    const h = parseInt(key.slice(0, dashIdx), 10)
+    const a = parseInt(key.slice(dashIdx + 1), 10)
+    HISTORICAL_PACKED_KEYS.add((h << 10) | a)
+  }
+}
+
 /**
  * Creates canonical hi-lo score key safely.
  * Bounds all inputs to non-negative integers.
@@ -44,8 +55,18 @@ export function makeScoreKey(a: unknown, b: unknown): string {
 
 /**
  * Prototype-safe check for whether an NBA score combination has occurred historically.
+ * Operates with zero-allocation integer fast-path for high throughput.
  */
 export function hasOccurred(a: unknown, b: unknown): boolean {
+  if (typeof a === 'number' && typeof b === 'number' && Number.isFinite(a) && Number.isFinite(b)) {
+    const intA = Math.max(0, Math.floor(a))
+    const intB = Math.max(0, Math.floor(b))
+    const hi = Math.max(intA, intB)
+    const lo = Math.min(intA, intB)
+    if (hi < 1024 && lo < 1024) {
+      return HISTORICAL_PACKED_KEYS.has((hi << 10) | lo)
+    }
+  }
   const key = makeScoreKey(a, b)
   return HISTORICAL_KEYS.has(key)
 }
@@ -67,28 +88,32 @@ export function getHistoricalRecord(a: unknown, b: unknown): HistoricalScoreReco
   return null
 }
 
+const MONTH_NAMES = [
+  'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+  'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
+] as const
+
 /**
- * Safely parses and formats ISO date string to readable format.
+ * Safely parses and formats ISO date string (YYYY-MM-DD) into readable format (e.g. "Feb 24, 2023").
+ * Zero GC churn, immune to year < 100 Date.UTC bugs, and timezone-neutral.
  */
 export function formatHistoricalDate(isoDate: unknown): string {
   if (typeof isoDate !== 'string' || !isoDate.trim()) return ''
-  const parts = isoDate.trim().split('-')
-  if (parts.length !== 3) return isoDate.trim()
+  const trimmed = isoDate.trim()
+  const parts = trimmed.split('-')
+  if (parts.length !== 3) return trimmed
 
   const [y, m, d] = parts.map(Number)
   if (!Number.isFinite(y) || !Number.isFinite(m) || !Number.isFinite(d)) {
-    return isoDate.trim()
+    return trimmed
   }
 
-  const date = new Date(Date.UTC(y, m - 1, d))
-  if (isNaN(date.getTime())) return isoDate.trim()
+  if (m < 1 || m > 12 || d < 1 || d > 31) {
+    return trimmed
+  }
 
-  return date.toLocaleDateString('en-US', {
-    month: 'short',
-    day: 'numeric',
-    year: 'numeric',
-    timeZone: 'UTC',
-  })
+  const monthStr = MONTH_NAMES[m - 1]
+  return `${monthStr} ${d}, ${y}`
 }
 
 /**

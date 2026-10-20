@@ -186,7 +186,10 @@ export const TEAM_ABBR_MAP: Record<string, string> = {
 export function normalizeTeamAbbr(abbr?: unknown): string {
   if (typeof abbr !== 'string') return ''
   const upper = abbr.trim().toUpperCase()
-  return TEAM_ABBR_MAP[upper] || upper
+  if (!upper || upper.length > 10) return ''
+  return Object.prototype.hasOwnProperty.call(TEAM_ABBR_MAP, upper)
+    ? TEAM_ABBR_MAP[upper]
+    : upper
 }
 
 // Franchise Local Regional Sports Network Crews (All 30 Teams)
@@ -564,23 +567,25 @@ const CREW_LABEL_CACHE = new Map<string, string>()
 /**
  * Formats announcing crew into a concise badge label (e.g. 'Tirico & Hill', 'Eagle & Miller', 'Breen & Jefferson').
  */
-export function formatCrewShortLabel(playByPlay?: string, colorAnalyst?: string): string {
-  if (!playByPlay) return ''
-  const cacheKey = `${playByPlay}::${colorAnalyst || ''}`
+export function formatCrewShortLabel(playByPlay?: unknown, colorAnalyst?: unknown): string {
+  if (typeof playByPlay !== 'string' || !playByPlay.trim()) return ''
+  const cleanPbp = playByPlay.trim()
+  const cleanColor = typeof colorAnalyst === 'string' ? colorAnalyst.trim() : ''
+  const cacheKey = `${cleanPbp}::${cleanColor}`
   const cached = CREW_LABEL_CACHE.get(cacheKey)
   if (cached !== undefined) return cached
 
-  const pbpParts = playByPlay.trim().split(' ')
-  const pbpLast = pbpParts[pbpParts.length - 1] || playByPlay
+  const pbpParts = cleanPbp.split(' ')
+  const pbpLast = pbpParts[pbpParts.length - 1] || cleanPbp
 
-  if (!colorAnalyst) {
+  if (!cleanColor) {
     if (CREW_LABEL_CACHE.size > 200) CREW_LABEL_CACHE.clear()
     CREW_LABEL_CACHE.set(cacheKey, pbpLast)
     return pbpLast
   }
 
   // Extract primary color analyst name before '&' or '/'
-  const primary = colorAnalyst.split('&')[0].split('/')[0].trim()
+  const primary = cleanColor.split('&')[0].split('/')[0].trim()
   const analystParts = primary.split(' ')
   const analystLast = analystParts[analystParts.length - 1] || primary
 

@@ -32,8 +32,9 @@ export const CourtDiagram: React.FC<CourtDiagramProps> = memo(({
 
   const homeColor = sanitizeHexColor(homeComp?.team?.color, '#1d428a')
   const awayColor = sanitizeHexColor(awayComp?.team?.color, '#ce1141')
-  const homeAbbr = homeComp?.team?.abbreviation || 'HOME'
-  const awayAbbr = awayComp?.team?.abbreviation || 'AWAY'
+  // Strict alphanumeric sanitisation for SVG text nodes
+  const homeAbbr = (homeComp?.team?.abbreviation || 'HOME').replace(/[^A-Za-z0-9]/g, '').slice(0, 6) || 'HOME'
+  const awayAbbr = (awayComp?.team?.abbreviation || 'AWAY').replace(/[^A-Za-z0-9]/g, '').slice(0, 6) || 'AWAY'
 
   // Memoized filtered shots to prevent unnecessary recalculation
   const filteredShots = useMemo(() => {
@@ -46,13 +47,21 @@ export const CourtDiagram: React.FC<CourtDiagramProps> = memo(({
     })
   }, [shots, shotFilter, homeAbbr, awayAbbr])
 
-  // Memoized shooting summary
+  // Single-pass shooting summary calculation (avoids 4 intermediate filter passes)
   const { totalShots, madeShots, fgPct, threePointersMade, threePointersTotal } = useMemo(() => {
+    let made = 0
+    let tpMade = 0
+    let tpTotal = 0
     const total = shots.length
-    const made = shots.filter((s) => s.made).length
+    for (let i = 0; i < total; i++) {
+      const s = shots[i]
+      if (s.made) made++
+      if (s.points === 3) {
+        tpTotal++
+        if (s.made) tpMade++
+      }
+    }
     const pct = total > 0 ? Math.round((made / total) * 100) : 0
-    const tpMade = shots.filter((s) => s.made && s.points === 3).length
-    const tpTotal = shots.filter((s) => s.points === 3).length
     return {
       totalShots: total,
       madeShots: made,

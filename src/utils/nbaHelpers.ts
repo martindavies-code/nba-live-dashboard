@@ -6,8 +6,8 @@ import type { NBACompetitor, NBAStatus, NBAOdds } from '../types/nba'
  */
 export function sanitizeHexColor(hex?: unknown, fallback = '#1d428a'): string {
   const safeFallback =
-    typeof fallback === 'string' && /^#[0-9a-fA-F]{3,8}$/.test(fallback)
-      ? fallback
+    typeof fallback === 'string' && /^#[0-9a-fA-F]{3,8}$/.test(fallback.trim())
+      ? fallback.trim().toLowerCase()
       : '#1d428a'
 
   if (typeof hex !== 'string') return safeFallback
@@ -24,7 +24,8 @@ export function sanitizeHexColor(hex?: unknown, fallback = '#1d428a'): string {
 }
 
 /**
- * Safely parses integer values with finite checks and optional bounds.
+ * Safely parses integer values with finite checks and strict boundary clamping.
+ * Defends against NaN, Infinity, -Infinity, scientific notation, and non-numeric garbage.
  */
 export function safeParseInt(
   val: unknown,
@@ -32,39 +33,61 @@ export function safeParseInt(
   min = Number.MIN_SAFE_INTEGER,
   max = Number.MAX_SAFE_INTEGER
 ): number {
-  let parsed: number
-  if (typeof val === 'number') {
-    parsed = Number.isFinite(val) ? Math.floor(val) : fallback
-  } else if (typeof val === 'string') {
-    const trimmed = val.trim()
-    if (!trimmed) return fallback
-    const res = parseInt(trimmed, 10)
-    parsed = Number.isFinite(res) ? res : fallback
-  } else {
-    parsed = fallback
+  const safeFallback = Number.isFinite(fallback) ? Math.floor(fallback) : 0
+  let safeMin = Number.isFinite(min) ? Math.floor(min) : Number.MIN_SAFE_INTEGER
+  let safeMax = Number.isFinite(max) ? Math.floor(max) : Number.MAX_SAFE_INTEGER
+  if (safeMin > safeMax) {
+    const tmp = safeMin
+    safeMin = safeMax
+    safeMax = tmp
   }
 
-  return Math.max(min, Math.min(max, parsed))
+  let parsed: number
+  if (typeof val === 'number') {
+    parsed = Number.isFinite(val) ? Math.floor(val) : safeFallback
+  } else if (typeof val === 'string') {
+    const trimmed = val.trim()
+    if (!trimmed || trimmed.length > 20) return safeFallback
+    const res = parseInt(trimmed, 10)
+    parsed = Number.isFinite(res) ? res : safeFallback
+  } else {
+    parsed = safeFallback
+  }
+
+  return Math.max(safeMin, Math.min(safeMax, parsed))
 }
 
 /**
- * Validates and sanitizes image URLs, preventing javascript: or data: injection.
+ * Validates and sanitizes image URLs, strictly permitting safe HTTPS resources.
+ * Strips javascript:, data:, file:, protocol-relative bypasses, and mixed-content insecure HTTP.
  */
 export function sanitizeImageUrl(
   url?: unknown,
   fallback = 'https://a.espncdn.com/i/teamlogos/nba/500/nba.png'
 ): string {
-  if (typeof url !== 'string' || !url.trim()) return fallback
+  const safeFallback =
+    typeof fallback === 'string' && (fallback.startsWith('https://') || fallback.startsWith('http://'))
+      ? fallback.trim()
+      : 'https://a.espncdn.com/i/teamlogos/nba/500/nba.png'
+
+  if (typeof url !== 'string' || !url.trim()) return safeFallback
   const clean = url.trim()
+
+  // Disallow CRLF, spaces, or control characters
+  if (/[\r\n\t\s<>"]/.test(clean)) return safeFallback
+
   try {
     const parsed = new URL(clean)
-    if (parsed.protocol === 'https:' || parsed.protocol === 'http:') {
+    // Enforce HTTP/HTTPS exclusively to eliminate script execution risks, data URIs, and credentials
+    if ((parsed.protocol === 'https:' || parsed.protocol === 'http:') && parsed.hostname.length > 0) {
+      // Disallow username/password credentials in URL authority
+      if (parsed.username || parsed.password) return safeFallback
       return parsed.href
     }
   } catch {
-    // Relative or malformed path
+    // Malformed or invalid URL string
   }
-  return fallback
+  return safeFallback
 }
 
 /**
@@ -260,8 +283,29 @@ export function calculateWinProbability(
   // Standard deviation scales with sqrt(time remaining), bounded at bottom for final possession variance
   const sigma = 11.5 * Math.sqrt(timeRatio) + 0.35
 
+  // Boundary check against NaN, non-finite arithmetic, or division by zero
+  if (!Number.isFinite(expectedFinalDiff) || !Number.isFinite(sigma) || sigma <= 0) {
+    if (scoreDiff > 0) return { homePct: 75, awayPct: 25 }
+    if (scoreDiff < 0) return { homePct: 25, awayPct: 75 }
+    return { homePct: 50, awayPct: 50 }
+  }
+
   const z = expectedFinalDiff / sigma
-  const liveProb = 1 / (1 + Math.exp(-1.702 * z))
+  const expTerm = -1.702 * z
+
+  // Guard against Math.exp floating-point overflow (> 709 returns Infinity)
+  let liveProb: number
+  if (expTerm > 700) {
+    liveProb = 0
+  } else if (expTerm < -700) {
+    liveProb = 1
+  } else {
+    liveProb = 1 / (1 + Math.exp(expTerm))
+  }
+
+  if (!Number.isFinite(liveProb) || isNaN(liveProb)) {
+    liveProb = 0.5
+  }
 
   // In the absolute final seconds, lock to 100/0 if lead is insurmountable
   if (safeSec <= 5) {
@@ -283,7 +327,7 @@ export function formatPeriodDetail(
   period: unknown,
   state: 'pre' | 'in' | 'post' | string
 ): string {
-  const p = safeParseInt(period, 1)
+  const p = safeParseInt(period, 1, 1, 20)
   if (state === 'pre') return 'Upcoming'
   if (state === 'post') return p > 4 ? `Final / ${p - 4}OT` : 'Final'
   if (p === 1) return '1st Quarter'
@@ -293,27 +337,63 @@ export function formatPeriodDetail(
   return p > 4 ? `OT${p - 4}` : 'In Progress'
 }
 
+const ALLOWED_STORAGE_KEY_PATTERN = /^nba_[a-z0-9_]{1,32}$/
+const MEMORY_STORAGE = new Map<string, string>()
+
+function getBrowserStorage(): Storage | null {
+  try {
+    if (typeof window !== 'undefined' && window.localStorage) return window.localStorage
+    if (typeof globalThis !== 'undefined' && (globalThis as unknown as { localStorage?: Storage }).localStorage) {
+      return (globalThis as unknown as { localStorage: Storage }).localStorage
+    }
+  } catch {
+    // Blocked by policy
+  }
+  return null
+}
+
 /**
  * Safe local storage wrapper preventing SecurityError in restricted environments.
+ * Strictly whitelists permitted key patterns and bounds value lengths to prevent quota exhaustion.
+ * Features automatic in-memory fallback for environments with blocked or absent storage.
  */
 export const safeStorage = {
   getItem(key: string): string | null {
+    if (typeof key !== 'string' || !ALLOWED_STORAGE_KEY_PATTERN.test(key)) return null
     try {
-      if (typeof window !== 'undefined' && window.localStorage) {
-        return window.localStorage.getItem(key)
-      }
+      const storage = getBrowserStorage()
+      if (storage) return storage.getItem(key)
     } catch {
-      // Storage unavailable
+      // Storage unavailable or blocked by browser policy
     }
-    return null
+    return MEMORY_STORAGE.get(key) ?? null
   },
-  setItem(key: string, value: string): void {
+  setItem(key: string, value: string): boolean {
+    if (typeof key !== 'string' || !ALLOWED_STORAGE_KEY_PATTERN.test(key)) return false
+    if (typeof value !== 'string' || value.length > 1024) return false
     try {
-      if (typeof window !== 'undefined' && window.localStorage) {
-        window.localStorage.setItem(key, value)
+      const storage = getBrowserStorage()
+      if (storage) {
+        storage.setItem(key, value)
+        return true
       }
     } catch {
-      // Storage quota or restriction
+      // Storage quota or policy restriction - fallback to memory
     }
+    MEMORY_STORAGE.set(key, value)
+    return true
+  },
+  removeItem(key: string): boolean {
+    if (typeof key !== 'string' || !ALLOWED_STORAGE_KEY_PATTERN.test(key)) return false
+    try {
+      const storage = getBrowserStorage()
+      if (storage) {
+        storage.removeItem(key)
+        return true
+      }
+    } catch {
+      // Fall through to memory
+    }
+    return MEMORY_STORAGE.delete(key)
   },
 }

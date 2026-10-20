@@ -26,19 +26,46 @@ const MAX_CACHE_ENTRIES = 15
 const IN_FLIGHT_REQUESTS = new Map<string, Promise<FetchNBAScoreboardResult>>()
 
 /**
- * Validates and sanitizes date string into YYYYMMDD format.
- * Strictly accepts YYYY-MM-DD or YYYYMMDD.
+ * Validates and sanitizes date parameter into strictly valid YYYYMMDD format.
+ * Validates real calendar bounds (1946 to 2100), month bounds (01-12), and leap-year days.
  */
 export function sanitizeDateParam(dateStr?: unknown): string | null {
   if (typeof dateStr !== 'string') return null
   const trimmed = dateStr.trim()
+
+  let yStr = ''
+  let mStr = ''
+  let dStr = ''
+
   if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) {
-    return trimmed.replace(/-/g, '')
+    const parts = trimmed.split('-')
+    yStr = parts[0]
+    mStr = parts[1]
+    dStr = parts[2]
+  } else if (/^\d{8}$/.test(trimmed)) {
+    yStr = trimmed.slice(0, 4)
+    mStr = trimmed.slice(4, 6)
+    dStr = trimmed.slice(6, 8)
+  } else {
+    return null
   }
-  if (/^\d{8}$/.test(trimmed)) {
-    return trimmed
+
+  const y = parseInt(yStr, 10)
+  const m = parseInt(mStr, 10)
+  const d = parseInt(dStr, 10)
+
+  // Enforce NBA historical epoch (1946 founding to 2100)
+  if (y < 1946 || y > 2100 || m < 1 || m > 12 || d < 1 || d > 31) {
+    return null
   }
-  return null
+
+  // Days in month check (handling leap years via UTC month zero)
+  const daysInMonth = new Date(Date.UTC(y, m, 0)).getUTCDate()
+  if (d > daysInMonth) {
+    return null
+  }
+
+  return `${yStr}${mStr}${dStr}`
 }
 
 /**
@@ -124,10 +151,35 @@ export function fetchNBAScoreboard(
     })
   }
 
-  // 2. Reuse in-flight network request if already active (when no custom signal)
-  if (!signal) {
-    const inFlight = IN_FLIGHT_REQUESTS.get(cacheKey)
-    if (inFlight) return inFlight
+  // If signal already aborted, fail fast without scheduling
+  if (signal?.aborted) {
+    const abortErr = new Error('The operation was aborted.')
+    abortErr.name = 'AbortError'
+    return Promise.reject(abortErr)
+  }
+
+  // 2. Reuse in-flight network request if already active
+  const inFlight = IN_FLIGHT_REQUESTS.get(cacheKey)
+  if (inFlight) {
+    if (!signal) return inFlight
+    return new Promise<FetchNBAScoreboardResult>((resolve, reject) => {
+      const onAbort = () => {
+        const abortErr = new Error('The operation was aborted.')
+        abortErr.name = 'AbortError'
+        reject(abortErr)
+      }
+      signal.addEventListener('abort', onAbort, { once: true })
+      inFlight.then(
+        (res) => {
+          signal.removeEventListener('abort', onAbort)
+          resolve(res)
+        },
+        (err) => {
+          signal.removeEventListener('abort', onAbort)
+          reject(err)
+        }
+      )
+    })
   }
 
   const executeFetch = async (): Promise<FetchNBAScoreboardResult> => {
@@ -218,13 +270,30 @@ export function fetchNBAScoreboard(
   }
 
   const fetchPromise = executeFetch().finally(() => {
-    if (!signal) {
-      IN_FLIGHT_REQUESTS.delete(cacheKey)
-    }
+    IN_FLIGHT_REQUESTS.delete(cacheKey)
   })
 
-  if (!signal) {
-    IN_FLIGHT_REQUESTS.set(cacheKey, fetchPromise)
+  IN_FLIGHT_REQUESTS.set(cacheKey, fetchPromise)
+
+  if (signal) {
+    return new Promise<FetchNBAScoreboardResult>((resolve, reject) => {
+      const onAbort = () => {
+        const abortErr = new Error('The operation was aborted.')
+        abortErr.name = 'AbortError'
+        reject(abortErr)
+      }
+      signal.addEventListener('abort', onAbort, { once: true })
+      fetchPromise.then(
+        (res) => {
+          signal.removeEventListener('abort', onAbort)
+          resolve(res)
+        },
+        (err) => {
+          signal.removeEventListener('abort', onAbort)
+          reject(err)
+        }
+      )
+    })
   }
 
   return fetchPromise
