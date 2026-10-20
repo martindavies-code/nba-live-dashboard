@@ -81,15 +81,15 @@ export const NATIONAL_CREWS: Record<string, CrewDetails[]> = {
     },
   ],
   NBC: [
-    // NBC Lead Crew #1: Marquee Primetime 7 PM / 8 PM Window
+    // NBC Lead Crew #1: Marquee Primetime Window (Tirico, Hill & Miller)
     {
       networkName: 'NBC Sports',
       playByPlay: 'Mike Tirico',
-      colorAnalyst: 'Grant Hill',
+      colorAnalyst: 'Grant Hill & Reggie Miller',
       sidelineReporter: 'Maria Taylor',
       radio: 'NBC Sports Audio (Chris Simms & Terry McAulay)',
     },
-    // NBC Primetime Crew #2: Doubleheader Late 9:30 PM / 10 PM Window
+    // NBC Primetime Crew #2: Doubleheader Late Window (Eagle, Miller & Crawford)
     {
       networkName: 'NBC Sports',
       playByPlay: 'Noah Eagle',
@@ -97,19 +97,19 @@ export const NATIONAL_CREWS: Record<string, CrewDetails[]> = {
       sidelineReporter: 'Zora Stephenson',
       radio: 'NBC Sports Audio',
     },
-    // NBC Showcase Crew #3: Afternoon / Matinee Window
+    // NBC Showcase Crew #3: Afternoon / Matinee Window (Gannon, Daugherty & Hummel)
     {
       networkName: 'NBC Sports',
       playByPlay: 'Terry Gannon',
-      colorAnalyst: 'Brad Daugherty & Austin Rivers',
-      sidelineReporter: 'Ahmed Fareed',
+      colorAnalyst: 'Brad Daugherty & Robbie Hummel',
+      sidelineReporter: 'Ashley ShahAhmadi',
       radio: 'NBC Sports Audio',
     },
-    // NBC / Peacock Crew #4: Alternate National Window
+    // NBC / Peacock Crew #4: Alternate National Window (Grady & Fisher / Benetti & Rivers)
     {
       networkName: 'Peacock',
       playByPlay: 'Michael Grady',
-      colorAnalyst: 'Derek Fisher',
+      colorAnalyst: 'Austin Rivers & Derek Fisher',
       sidelineReporter: 'Jordan Cornette',
       radio: 'NBC Sports Audio',
     },
@@ -118,34 +118,44 @@ export const NATIONAL_CREWS: Record<string, CrewDetails[]> = {
     {
       networkName: 'Peacock',
       playByPlay: 'Terry Gannon',
-      colorAnalyst: 'Brad Daugherty',
+      colorAnalyst: 'Brad Daugherty & Robbie Hummel',
       sidelineReporter: 'Ahmed Fareed',
     },
     {
       networkName: 'Peacock',
       playByPlay: 'Michael Grady',
-      colorAnalyst: 'Derek Fisher',
+      colorAnalyst: 'Austin Rivers & Derek Fisher',
       sidelineReporter: 'Jordan Cornette',
     },
   ],
   'PRIME VIDEO': [
+    // Prime Video Lead Booth: Ian Eagle with Stan Van Gundy & Dwyane Wade
     {
       networkName: 'Prime Video',
       playByPlay: 'Ian Eagle',
-      colorAnalyst: 'Stan Van Gundy',
-      sidelineReporter: 'Taylor Rooks',
+      colorAnalyst: 'Stan Van Gundy & Dwyane Wade',
+      sidelineReporter: 'Cassidy Hubbarth',
     },
+    // Prime Video Showcase Booth: Kevin Harlan with Candace Parker & Steve Nash
     {
       networkName: 'Prime Video',
       playByPlay: 'Kevin Harlan',
-      colorAnalyst: 'Brent Barry',
-      sidelineReporter: 'Allie LaForce',
+      colorAnalyst: 'Candace Parker & Steve Nash',
+      sidelineReporter: 'Allie Clifton',
     },
+    // Prime Video Roster: Michael Grady with Jim Jackson & Brent Barry
     {
       networkName: 'Prime Video',
       playByPlay: 'Michael Grady',
-      colorAnalyst: 'Jim Jackson',
-      sidelineReporter: 'Tom Haberstroh',
+      colorAnalyst: 'Jim Jackson & Brent Barry',
+      sidelineReporter: 'Kristina Pink',
+    },
+    // Prime Video Roster: Eric Collins with Dell Curry
+    {
+      networkName: 'Prime Video',
+      playByPlay: 'Eric Collins',
+      colorAnalyst: 'Dell Curry',
+      sidelineReporter: 'Jaydee Dyer',
     },
   ],
   'NBA TV': [

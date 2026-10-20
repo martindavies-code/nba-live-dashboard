@@ -9,6 +9,7 @@
     "lint": "oxlint",
     "test": "node --test --experimental-strip-types src/**/*.test.mjs",
     "verify:announcers": "node --test --experimental-strip-types src/utils/announcers.test.mjs",
+    "check:announcers": "node --experimental-strip-types scripts/daily-announcer-check.mjs",
     "preview": "vite preview"
   },
   "dependencies": {
