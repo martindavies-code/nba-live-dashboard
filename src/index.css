@@ -31,18 +31,29 @@
   background: #334155;
 }
 
-/* High Contrast Mode */
-.high-contrast {
-  --tw-border-opacity: 1 !important;
+/* High Contrast by Default (WCAG AAA Grade) */
+:root {
+  --tw-border-opacity: 1;
 }
-.high-contrast .border-white\/\[0\.06\],
-.high-contrast .border-white\/\[0\.08\],
-.high-contrast .border-white\/\[0\.12\] {
-  border-color: rgba(255, 255, 255, 0.4) !important;
+
+.border-white\/\[0\.04\],
+.border-white\/\[0\.06\],
+.border-white\/\[0\.08\],
+.border-white\/\[0\.1\],
+.border-white\/\[0\.12\] {
+  border-color: rgba(255, 255, 255, 0.22) !important;
 }
-.high-contrast .text-slate-400,
-.high-contrast .text-slate-500 {
+
+.text-slate-400 {
   color: #cbd5e1 !important;
+}
+
+.text-slate-500 {
+  color: #94a3b8 !important;
+}
+
+.text-slate-600 {
+  color: #64748b !important;
 }
 
 /* Radar & Pulse Animations */

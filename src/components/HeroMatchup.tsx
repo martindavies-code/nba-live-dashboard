@@ -102,16 +102,16 @@ export const HeroMatchup: React.FC<HeroMatchupProps> = memo(({ event }) => {
   }
 
   return (
-    <section className="relative overflow-hidden rounded-2xl border border-white/[0.12] bg-gradient-to-b from-[#0b1222] via-[#090e1a] to-[#060a12] shadow-2xl backdrop-blur-xl">
+    <section className="relative overflow-hidden rounded-2xl border border-white/[0.18] bg-[#0c1424] shadow-2xl backdrop-blur-xl">
       {/* Top Spotlight Header Bar */}
-      <div className="flex flex-wrap items-center justify-between gap-2.5 border-b border-white/[0.08] bg-black/40 px-4 sm:px-5 py-2.5 sm:py-3 text-xs">
+      <div className="flex flex-wrap items-center justify-between gap-2.5 border-b border-white/[0.12] bg-black/50 px-4 sm:px-6 py-2.5 sm:py-3 text-xs">
         <div className="flex flex-wrap items-center gap-2">
           <span className="flex h-2.5 w-2.5 rounded-full bg-orange-500 animate-ping" />
           <span className="font-extrabold uppercase tracking-widest text-orange-400 text-[10px] sm:text-[11px]">
             Spotlight Matchup
           </span>
-          <span className="text-slate-600 hidden sm:inline">|</span>
-          <span className="font-mono text-slate-300 font-bold text-[11px] sm:text-xs">
+          <span className="text-slate-500 hidden sm:inline">|</span>
+          <span className="font-mono text-slate-200 font-bold text-[11px] sm:text-xs">
             {isLive ? `Quarter ${status.period} • ${status.displayClock}` : status.type?.detail || 'Match Details'}
           </span>
         </div>
@@ -119,7 +119,7 @@ export const HeroMatchup: React.FC<HeroMatchupProps> = memo(({ event }) => {
         <div className="flex flex-wrap items-center gap-2">
           {/* Announcing Crew Network Badge */}
           {crew?.network && (
-            <span className="inline-flex items-center gap-1.5 rounded-full bg-sky-500/15 border border-sky-400/30 px-2.5 py-0.5 sm:px-3 sm:py-1 font-semibold text-sky-200 text-[10px] sm:text-xs">
+            <span className="inline-flex items-center gap-1.5 rounded-full bg-sky-500/20 border border-sky-400/40 px-2.5 py-0.5 sm:px-3 sm:py-1 font-semibold text-sky-200 text-[10px] sm:text-xs">
               <Tv className="h-3 w-3 text-sky-400" />
               {crew.network}
             </span>
@@ -127,8 +127,8 @@ export const HeroMatchup: React.FC<HeroMatchupProps> = memo(({ event }) => {
 
           {/* Clutch Alert Badge */}
           {isClutch && (
-            <span className="inline-flex items-center gap-1 rounded bg-rose-600/30 border border-rose-500/50 px-2 py-0.5 text-[10px] sm:text-xs font-black text-rose-300 animate-pulse">
-              <ShieldAlert className="h-3 w-3 sm:h-3.5 sm:w-3.5 text-rose-400" />
+            <span className="inline-flex items-center gap-1 rounded bg-rose-600/40 border border-rose-500/60 px-2 py-0.5 text-[10px] sm:text-xs font-black text-rose-200 animate-pulse">
+              <ShieldAlert className="h-3 w-3 sm:h-3.5 sm:w-3.5 text-rose-300" />
               CLUTCH GAME
             </span>
           )}
@@ -136,7 +136,7 @@ export const HeroMatchup: React.FC<HeroMatchupProps> = memo(({ event }) => {
           {/* Copy Snapshot Button */}
           <button
             onClick={handleCopySnapshot}
-            className="flex items-center gap-1.5 rounded-lg border border-white/[0.1] bg-white/[0.06] hover:bg-white/[0.12] px-2 py-0.5 sm:px-2.5 sm:py-1 text-slate-300 hover:text-white transition-colors text-[11px] sm:text-xs"
+            className="flex items-center gap-1.5 rounded-lg border border-white/[0.15] bg-white/[0.08] hover:bg-white/[0.15] px-2.5 py-1 text-slate-200 hover:text-white transition-colors text-[11px] sm:text-xs font-medium"
             title="Copy matchup snapshot to clipboard"
           >
             {isCopied ? <Check className="h-3.5 w-3.5 text-emerald-400" /> : <Share2 className="h-3.5 w-3.5" />}
@@ -145,264 +145,318 @@ export const HeroMatchup: React.FC<HeroMatchupProps> = memo(({ event }) => {
         </div>
       </div>
 
-      {/* Hero Content Grid: Left Column (Teams, Announcers, Scorigami) | Right Column (Court Shot Chart) */}
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 p-4 sm:p-6">
-        {/* Left Column: Teams Scoreboard, Announcers, Scorigami */}
-        <div className="lg:col-span-5 flex flex-col justify-between space-y-5">
-          {/* Venue & Clock Strip */}
-          <div className="flex items-center justify-between gap-2 border-b border-white/[0.06] pb-2 text-xs text-slate-400">
-            <span className="flex items-center gap-1.5 shrink-0">
-              <span className="h-2 w-2 rounded-full bg-emerald-400" />
-              {isLive ? 'Live On Air' : status.type?.detail}
+      <div className="p-4 sm:p-6 space-y-5">
+        {/* Full-Width Commanding Scoreboard Header */}
+        <div className="rounded-xl border border-white/[0.12] bg-[#080d1a] p-4 sm:p-6 shadow-lg">
+          {/* Venue & Clock Info Strip */}
+          <div className="flex items-center justify-between gap-2 border-b border-white/[0.08] pb-3 text-xs text-slate-300">
+            <span className="flex items-center gap-2 shrink-0 font-medium">
+              <span className={`h-2.5 w-2.5 rounded-full ${isLive ? 'bg-emerald-400 animate-pulse' : 'bg-slate-400'}`} />
+              <strong className="text-white">{isLive ? 'Live On Air' : status.type?.detail}</strong>
             </span>
             {venueText && (
-              <span className="flex items-center gap-1 truncate max-w-[200px] sm:max-w-[240px]" title={venueText}>
-                <MapPin className="h-3 w-3 text-slate-500 shrink-0" />
+              <span className="flex items-center gap-1.5 truncate max-w-[280px] sm:max-w-md text-slate-300" title={venueText}>
+                <MapPin className="h-3.5 w-3.5 text-orange-400 shrink-0" />
                 <span className="truncate">{venueText}</span>
               </span>
             )}
           </div>
 
-          {/* Teams Display */}
-          <div className="space-y-4">
-            {/* Away Team */}
-            <div className="flex items-center justify-between gap-3">
-              <div className="flex items-center gap-3 min-w-0">
+          {/* Symmetrical Desktop / Stacked Mobile Scoreboard */}
+          <div className="py-4 grid grid-cols-1 md:grid-cols-11 items-center gap-4">
+            {/* Away Team (Columns 1-4) */}
+            <div className="md:col-span-4 flex items-center justify-between md:justify-start gap-4 min-w-0">
+              <div className="flex items-center gap-3.5 min-w-0">
                 <img
                   src={sanitizeImageUrl(awayComp?.team?.logo)}
                   alt={awayComp?.team?.displayName || 'Away'}
-                  className="h-10 w-10 sm:h-12 sm:w-12 object-contain drop-shadow-md shrink-0"
+                  className="h-12 w-12 sm:h-16 sm:w-16 object-contain drop-shadow-lg shrink-0"
                   loading="lazy"
                 />
                 <div className="min-w-0">
-                  <div className="flex items-center gap-1.5 sm:gap-2 flex-wrap">
-                    <span className="font-extrabold text-base sm:text-lg text-white truncate">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="font-extrabold text-lg sm:text-xl text-white truncate">
                       {awayComp?.team?.displayName || awayComp?.team?.name}
                     </span>
-                    <span className="font-mono text-xs font-semibold text-slate-400 shrink-0">
+                    <span className="font-mono text-xs font-bold text-slate-300 bg-white/[0.08] px-1.5 py-0.5 rounded shrink-0">
                       {awayComp?.team?.abbreviation}
                     </span>
                   </div>
-                  <div className="flex items-center gap-2 text-xs text-slate-400">
-                    <span>{awayComp?.records?.[0]?.summary || '0-0'}</span>
+                  <div className="flex items-center gap-2 text-xs text-slate-300 mt-0.5">
+                    <span className="font-medium">{awayComp?.records?.[0]?.summary || '0-0'}</span>
                     {situation?.possession === awayComp?.team?.id && (
-                      <span className="rounded bg-orange-500/20 text-orange-300 font-bold text-[10px] px-1.5 py-0.2 shrink-0">
-                        POSSESSION
+                      <span className="rounded bg-orange-500/25 border border-orange-500/50 text-orange-200 font-extrabold text-[10px] px-2 py-0.2 shrink-0 animate-pulse">
+                        🏀 POSSESSION
                       </span>
                     )}
                   </div>
                 </div>
               </div>
-              <span className="font-['Oswald'] text-3xl sm:text-5xl font-bold tracking-tight text-white tabular-nums shrink-0">
+              {/* Score on Mobile */}
+              <span className="md:hidden font-['Oswald'] text-4xl sm:text-5xl font-bold tracking-tight text-white tabular-nums shrink-0">
                 {awayComp?.score ?? '-'}
               </span>
             </div>
 
-            {/* Home Team */}
-            <div className="flex items-center justify-between gap-3">
-              <div className="flex items-center gap-3 min-w-0">
+            {/* Center Status & Large Scores on Desktop (Columns 5-7) */}
+            <div className="md:col-span-3 flex flex-col items-center justify-center text-center py-2 md:py-0 border-y md:border-y-0 md:border-x border-white/[0.08] px-2">
+              <div className="hidden md:flex items-center justify-center gap-6 w-full">
+                <span className="font-['Oswald'] text-5xl lg:text-6xl font-bold tracking-tight text-white tabular-nums shrink-0">
+                  {awayComp?.score ?? '-'}
+                </span>
+                <span className="font-mono text-xs text-slate-400 font-bold uppercase tracking-wider">
+                  VS
+                </span>
+                <span className="font-['Oswald'] text-5xl lg:text-6xl font-bold tracking-tight text-white tabular-nums shrink-0">
+                  {homeComp?.score ?? '-'}
+                </span>
+              </div>
+
+              <div className="mt-1 space-y-0.5">
+                <span className="font-mono text-xs font-bold text-amber-300 uppercase tracking-wide block">
+                  {isLive ? `Q${status.period} • ${status.displayClock}` : isFinal ? 'Final Score' : status.type?.detail}
+                </span>
+                {Math.abs(homeScore - awayScore) > 0 && isLive && (
+                  <span className="text-[11px] font-semibold text-slate-300 block">
+                    {homeScore > awayScore ? `${homeAbbr} by ${homeScore - awayScore}` : `${awayAbbr} by ${awayScore - homeScore}`}
+                  </span>
+                )}
+                {competition.odds?.[0] && (
+                  <span className="font-mono text-[10px] text-slate-400 block">
+                    {competition.odds[0].details ? `Line: ${competition.odds[0].details}` : ''}
+                    {competition.odds[0].overUnder ? ` • O/U ${competition.odds[0].overUnder}` : ''}
+                  </span>
+                )}
+              </div>
+            </div>
+
+            {/* Home Team (Columns 8-11) */}
+            <div className="md:col-span-4 flex items-center justify-between md:justify-end gap-4 min-w-0">
+              {/* Score on Mobile */}
+              <span className="md:hidden font-['Oswald'] text-4xl sm:text-5xl font-bold tracking-tight text-white tabular-nums shrink-0">
+                {homeComp?.score ?? '-'}
+              </span>
+
+              <div className="flex items-center gap-3.5 min-w-0 md:flex-row-reverse md:text-right">
                 <img
                   src={sanitizeImageUrl(homeComp?.team?.logo)}
                   alt={homeComp?.team?.displayName || 'Home'}
-                  className="h-10 w-10 sm:h-12 sm:w-12 object-contain drop-shadow-md shrink-0"
+                  className="h-12 w-12 sm:h-16 sm:w-16 object-contain drop-shadow-lg shrink-0"
                   loading="lazy"
                 />
                 <div className="min-w-0">
-                  <div className="flex items-center gap-1.5 sm:gap-2 flex-wrap">
-                    <span className="font-extrabold text-base sm:text-lg text-white truncate">
-                      {homeComp?.team?.displayName || homeComp?.team?.name}
-                    </span>
-                    <span className="font-mono text-xs font-semibold text-slate-400 shrink-0">
+                  <div className="flex items-center gap-2 flex-wrap md:justify-end">
+                    <span className="font-mono text-xs font-bold text-slate-300 bg-white/[0.08] px-1.5 py-0.5 rounded shrink-0">
                       {homeComp?.team?.abbreviation}
                     </span>
+                    <span className="font-extrabold text-lg sm:text-xl text-white truncate">
+                      {homeComp?.team?.displayName || homeComp?.team?.name}
+                    </span>
                   </div>
-                  <div className="flex items-center gap-2 text-xs text-slate-400">
-                    <span>{homeComp?.records?.[0]?.summary || '0-0'}</span>
+                  <div className="flex items-center gap-2 text-xs text-slate-300 mt-0.5 md:justify-end">
                     {situation?.possession === homeComp?.team?.id && (
-                      <span className="rounded bg-orange-500/20 text-orange-300 font-bold text-[10px] px-1.5 py-0.2 shrink-0">
-                        POSSESSION
+                      <span className="rounded bg-orange-500/25 border border-orange-500/50 text-orange-200 font-extrabold text-[10px] px-2 py-0.2 shrink-0 animate-pulse">
+                        🏀 POSSESSION
                       </span>
                     )}
+                    <span className="font-medium">{homeComp?.records?.[0]?.summary || '0-0'}</span>
                   </div>
                 </div>
               </div>
-              <span className="font-['Oswald'] text-3xl sm:text-5xl font-bold tracking-tight text-white tabular-nums shrink-0">
-                {homeComp?.score ?? '-'}
-              </span>
             </div>
           </div>
 
-          {/* Quarter-by-Quarter Linescore Table */}
-          {((homeComp?.linescores && homeComp.linescores.length > 0) ||
-            (awayComp?.linescores && awayComp.linescores.length > 0)) && (
-            <div className="rounded-xl border border-white/[0.06] bg-[#070c16] p-2.5 overflow-x-auto">
-              <table className="w-full text-center text-xs font-mono">
-                <thead>
-                  <tr className="text-slate-400 text-[10px] border-b border-white/[0.06]">
-                    <th className="text-left py-1 px-2 font-normal">Team</th>
-                    <th className="py-1 px-2">Q1</th>
-                    <th className="py-1 px-2">Q2</th>
-                    <th className="py-1 px-2">Q3</th>
-                    <th className="py-1 px-2">Q4</th>
-                    {(homeComp?.linescores?.length ?? 0) > 4 && <th className="py-1 px-2">OT</th>}
-                    <th className="py-1 px-2 font-bold text-white">T</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-white/[0.04]">
-                  <tr>
-                    <td className="text-left py-1 px-2 font-bold text-slate-300">{awayAbbr}</td>
-                    <td className="py-1 px-2 text-slate-400">{awayComp?.linescores?.[0]?.value ?? '-'}</td>
-                    <td className="py-1 px-2 text-slate-400">{awayComp?.linescores?.[1]?.value ?? '-'}</td>
-                    <td className="py-1 px-2 text-slate-400">{awayComp?.linescores?.[2]?.value ?? '-'}</td>
-                    <td className="py-1 px-2 text-slate-400">{awayComp?.linescores?.[3]?.value ?? '-'}</td>
-                    {(homeComp?.linescores?.length ?? 0) > 4 && (
-                      <td className="py-1 px-2 text-slate-400">{awayComp?.linescores?.[4]?.value ?? '-'}</td>
-                    )}
-                    <td className="py-1 px-2 font-black text-white">{awayComp?.score ?? '-'}</td>
-                  </tr>
-                  <tr>
-                    <td className="text-left py-1 px-2 font-bold text-slate-300">{homeAbbr}</td>
-                    <td className="py-1 px-2 text-slate-400">{homeComp?.linescores?.[0]?.value ?? '-'}</td>
-                    <td className="py-1 px-2 text-slate-400">{homeComp?.linescores?.[1]?.value ?? '-'}</td>
-                    <td className="py-1 px-2 text-slate-400">{homeComp?.linescores?.[2]?.value ?? '-'}</td>
-                    <td className="py-1 px-2 text-slate-400">{homeComp?.linescores?.[3]?.value ?? '-'}</td>
-                    {(homeComp?.linescores?.length ?? 0) > 4 && (
-                      <td className="py-1 px-2 text-slate-400">{homeComp?.linescores?.[4]?.value ?? '-'}</td>
-                    )}
-                    <td className="py-1 px-2 font-black text-white">{homeComp?.score ?? '-'}</td>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
-          )}
-
-          {/* Win Probability Bar */}
-          <WinProbabilityBar
-            homeWinPercentage={winProb.homePct / 100}
-            awayWinPercentage={winProb.awayPct / 100}
-            homeCompetitor={homeComp}
-            awayCompetitor={awayComp}
-            gameState={state}
-            status={status}
-            situation={situation}
-            odds={competition.odds}
-          />
-
-          {/* Prominent Announcing Crew Showcase */}
-          {crew && (
-            <div className="rounded-xl border border-white/[0.08] bg-[#070d18] p-3 text-xs space-y-2">
-              <div className="flex items-center justify-between border-b border-white/[0.06] pb-1.5">
-                <span className="flex items-center gap-1.5 font-bold tracking-wider uppercase text-[10px] text-sky-400">
-                  <Mic className="h-3 w-3" />
-                  Announcing Crew & Broadcast
-                </span>
-                <span className="font-mono text-[11px] text-slate-300 font-semibold bg-white/[0.06] px-2 py-0.5 rounded">
-                  {crew.network}
-                </span>
-              </div>
-
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-slate-300 pt-0.5">
-                <div>
-                  <span className="text-[10px] uppercase font-semibold text-slate-500 block">Commentators</span>
-                  <strong className="text-white font-medium">{crew.playByPlay}</strong>
-                  <span className="text-slate-400 block text-[11px]">{crew.colorAnalyst}</span>
-                </div>
-                {crew.sidelineReporter && (
-                  <div>
-                    <span className="text-[10px] uppercase font-semibold text-slate-500 block">Sideline Reporter</span>
-                    <strong className="text-slate-200 font-medium">{crew.sidelineReporter}</strong>
-                  </div>
-                )}
-              </div>
-
-              {/* Radio Broadcast */}
-              {crew.radioNetwork && (
-                <div className="flex items-center gap-1.5 text-[11px] text-slate-400 border-t border-white/[0.04] pt-1.5">
-                  <Radio className="h-3 w-3 text-amber-400 shrink-0" />
-                  <span className="truncate">{crew.radioNetwork}</span>
-                </div>
-              )}
-
-              {/* Referees / Officials */}
-              {crew.officials && crew.officials.length > 0 && (
-                <div className="flex items-center gap-1.5 text-[10px] text-slate-400 border-t border-white/[0.04] pt-1.5">
-                  <Users className="h-3 w-3 text-emerald-400 shrink-0" />
-                  <span>
-                    <strong className="text-slate-300">Officials: </strong>
-                    {crew.officials.map((o) => `${o.name} (${o.role})`).join(', ')}
-                  </span>
-                </div>
-              )}
-            </div>
-          )}
-
-          {/* NBA Scorigami Showcase Section */}
-          <div
-            className={`rounded-xl border p-3.5 text-xs transition-colors ${
-              scorigamiInfo.isCurrentScorigami
-                ? 'border-violet-500/50 bg-gradient-to-r from-violet-950/70 to-purple-950/60 text-violet-200 shadow-md shadow-violet-950/50'
-                : 'border-white/[0.08] bg-[#070c16] text-slate-300'
-            }`}
-          >
-            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-white/[0.08] pb-2 mb-2">
-              <span className="flex items-center gap-1.5 font-bold tracking-wider uppercase text-[11px] text-slate-400">
-                <Sparkles
-                  className={`h-3.5 w-3.5 ${
-                    scorigamiInfo.isCurrentScorigami ? 'text-violet-400 animate-pulse' : 'text-slate-500'
-                  }`}
-                />
-                {scorigamiInfo.isCurrentScorigami ? '✨ Live NBA Scorigami in Progress' : isFinal ? 'NBA Scorigami Status' : 'NBA Scorigami Probability'}
-              </span>
-              <span
-                className={`font-mono font-bold text-xs tabular-nums px-2 py-0.5 rounded ${
-                  scorigamiInfo.isCurrentScorigami
-                    ? 'bg-violet-500/20 text-violet-200 border border-violet-500/40'
-                    : 'bg-white/[0.06] text-slate-200 border border-white/[0.08]'
-                }`}
-              >
-                {scorigamiInfo.chanceLabel}
-              </span>
-            </div>
-
-            {scorigamiInfo.mostLikelyNovel && (
-              <div className="flex items-center justify-between py-1">
-                <span className="text-slate-400 text-xs">Most Likely Novel Score:</span>
-                <span className="font-mono text-sm font-bold text-violet-300 bg-violet-950/80 px-2 py-0.5 rounded border border-violet-700/50">
-                  {scorigamiInfo.mostLikelyLabel}
-                </span>
-              </div>
-            )}
-
-            <div className="mt-1.5 text-xs leading-relaxed text-slate-400">
-              <span className="font-semibold text-slate-200">When: </span>
-              {scorigamiInfo.whenScenario}
-            </div>
-
-            {scorigamiInfo.lastGameSummary && (
-              <div className="mt-2 flex items-start gap-1.5 text-xs text-slate-400 border-t border-white/[0.06] pt-2">
-                <span className="font-semibold text-slate-200 shrink-0">Last Occurred:</span>
-                <span className="text-slate-300">
-                  <strong className="text-amber-300/90 font-medium">{scorigamiInfo.lastGameSummary}</strong>
-                  <span className="text-slate-400 ml-1.5 font-mono text-[11px]">
-                    ({scorigamiInfo.currentOccurrences}x in NBA history)
-                  </span>
-                </span>
-              </div>
-            )}
+          {/* Full-Width Live Win Probability Meter */}
+          <div className="border-t border-white/[0.08] pt-3">
+            <WinProbabilityBar
+              homeWinPercentage={winProb.homePct / 100}
+              awayWinPercentage={winProb.awayPct / 100}
+              homeCompetitor={homeComp}
+              awayCompetitor={awayComp}
+              gameState={state}
+              status={status}
+              situation={situation}
+              odds={competition.odds}
+            />
           </div>
         </div>
 
-        {/* Right Column: Dynamic Tactical Basketball Court Shot Radar */}
-        <div className="lg:col-span-7 flex flex-col justify-center">
-          <CourtDiagram
-            situation={situation}
-            competitors={competitors}
-            shots={competition.shots}
-            gameState={state}
-            gameStatusDetail={status?.type?.detail}
-            isHero={true}
-            status={status}
-          />
+        {/* Lower Intelligence Grid: Linescore & Broadcast (Left) | Scorigami & Tactical Court (Right) */}
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-5">
+          {/* Left Deck (Col 6): Linescore Breakdown & Broadcast Crew */}
+          <div className="lg:col-span-6 flex flex-col space-y-4">
+            {/* Quarter-by-Quarter Linescore Table */}
+            {((homeComp?.linescores && homeComp.linescores.length > 0) ||
+              (awayComp?.linescores && awayComp.linescores.length > 0)) && (
+              <div className="rounded-xl border border-white/[0.12] bg-[#080d1a] p-3.5 shadow-md">
+                <div className="flex items-center justify-between border-b border-white/[0.08] pb-2 mb-2">
+                  <span className="font-bold uppercase tracking-wider text-[11px] text-slate-200">
+                    Quarter-by-Quarter Linescore
+                  </span>
+                  <span className="font-mono text-[10px] text-slate-400">Official Period Totals</span>
+                </div>
+                <div className="overflow-x-auto no-scrollbar">
+                  <table className="w-full text-center text-xs font-mono">
+                    <thead>
+                      <tr className="text-slate-300 text-[11px] border-b border-white/[0.08] font-bold">
+                        <th className="text-left py-1.5 px-2.5">Team</th>
+                        <th className="py-1.5 px-2.5">Q1</th>
+                        <th className="py-1.5 px-2.5">Q2</th>
+                        <th className="py-1.5 px-2.5">Q3</th>
+                        <th className="py-1.5 px-2.5">Q4</th>
+                        {(homeComp?.linescores?.length ?? 0) > 4 && <th className="py-1.5 px-2.5">OT</th>}
+                        <th className="py-1.5 px-2.5 font-black text-white bg-white/[0.06] rounded-r">TOTAL</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-white/[0.06]">
+                      <tr className="hover:bg-white/[0.02]">
+                        <td className="text-left py-2 px-2.5 font-bold text-white">{awayAbbr}</td>
+                        <td className="py-2 px-2.5 text-slate-200">{awayComp?.linescores?.[0]?.value ?? '-'}</td>
+                        <td className="py-2 px-2.5 text-slate-200">{awayComp?.linescores?.[1]?.value ?? '-'}</td>
+                        <td className="py-2 px-2.5 text-slate-200">{awayComp?.linescores?.[2]?.value ?? '-'}</td>
+                        <td className="py-2 px-2.5 text-slate-200">{awayComp?.linescores?.[3]?.value ?? '-'}</td>
+                        {(homeComp?.linescores?.length ?? 0) > 4 && (
+                          <td className="py-2 px-2.5 text-slate-200">{awayComp?.linescores?.[4]?.value ?? '-'}</td>
+                        )}
+                        <td className="py-2 px-2.5 font-black text-white bg-white/[0.06] text-sm">{awayComp?.score ?? '-'}</td>
+                      </tr>
+                      <tr className="hover:bg-white/[0.02]">
+                        <td className="text-left py-2 px-2.5 font-bold text-white">{homeAbbr}</td>
+                        <td className="py-2 px-2.5 text-slate-200">{homeComp?.linescores?.[0]?.value ?? '-'}</td>
+                        <td className="py-2 px-2.5 text-slate-200">{homeComp?.linescores?.[1]?.value ?? '-'}</td>
+                        <td className="py-2 px-2.5 text-slate-200">{homeComp?.linescores?.[2]?.value ?? '-'}</td>
+                        <td className="py-2 px-2.5 text-slate-200">{homeComp?.linescores?.[3]?.value ?? '-'}</td>
+                        {(homeComp?.linescores?.length ?? 0) > 4 && (
+                          <td className="py-2 px-2.5 text-slate-200">{homeComp?.linescores?.[4]?.value ?? '-'}</td>
+                        )}
+                        <td className="py-2 px-2.5 font-black text-white bg-white/[0.06] text-sm">{homeComp?.score ?? '-'}</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+
+            {/* Broadcast & Announcing Crew Card */}
+            {crew && (
+              <div className="rounded-xl border border-white/[0.12] bg-[#080d1a] p-3.5 text-xs space-y-2.5 shadow-md">
+                <div className="flex items-center justify-between border-b border-white/[0.08] pb-2">
+                  <span className="flex items-center gap-1.5 font-bold tracking-wider uppercase text-[11px] text-sky-400">
+                    <Mic className="h-3.5 w-3.5" />
+                    Broadcast & Announcing Team
+                  </span>
+                  <span className="font-mono text-xs text-white font-bold bg-sky-500/20 border border-sky-400/40 px-2.5 py-0.5 rounded">
+                    {crew.network}
+                  </span>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-slate-200 pt-0.5">
+                  <div className="rounded-lg bg-white/[0.03] p-2 border border-white/[0.04]">
+                    <span className="text-[10px] uppercase font-bold text-slate-400 block mb-0.5">Commentators</span>
+                    <strong className="text-white font-bold text-sm block">{crew.playByPlay}</strong>
+                    <span className="text-slate-300 block text-xs">{crew.colorAnalyst}</span>
+                  </div>
+                  {crew.sidelineReporter && (
+                    <div className="rounded-lg bg-white/[0.03] p-2 border border-white/[0.04]">
+                      <span className="text-[10px] uppercase font-bold text-slate-400 block mb-0.5">Sideline Reporter</span>
+                      <strong className="text-slate-100 font-semibold text-sm block">{crew.sidelineReporter}</strong>
+                      <span className="text-slate-400 text-xs">On-Court Live</span>
+                    </div>
+                  )}
+                </div>
+
+                {/* Radio & Officials */}
+                <div className="flex flex-wrap items-center justify-between gap-2 border-t border-white/[0.06] pt-2 text-xs">
+                  {crew.radioNetwork && (
+                    <div className="flex items-center gap-1.5 text-slate-300">
+                      <Radio className="h-3.5 w-3.5 text-amber-400 shrink-0" />
+                      <span className="font-medium">{crew.radioNetwork}</span>
+                    </div>
+                  )}
+                  {crew.officials && crew.officials.length > 0 && (
+                    <div className="flex items-center gap-1.5 text-slate-400 text-[11px] ml-auto">
+                      <Users className="h-3.5 w-3.5 text-emerald-400 shrink-0" />
+                      <span>
+                        <strong className="text-slate-200">Refs: </strong>
+                        {crew.officials.map((o) => `${o.name}`).join(', ')}
+                      </span>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Right Deck (Col 6): NBA Scorigami Intelligence & Court Radar */}
+          <div className="lg:col-span-6 flex flex-col space-y-4">
+            {/* NBA Scorigami Showcase Card */}
+            <div
+              className={`rounded-xl border p-4 text-xs transition-colors shadow-md ${
+                scorigamiInfo.isCurrentScorigami
+                  ? 'border-violet-500/70 bg-gradient-to-r from-violet-950/80 to-purple-950/70 text-violet-100 shadow-violet-950/50'
+                  : 'border-white/[0.12] bg-[#080d1a] text-slate-200'
+              }`}
+            >
+              <div className="flex flex-wrap items-center justify-between gap-2 border-b border-white/[0.08] pb-2.5 mb-2.5">
+                <span className="flex items-center gap-1.5 font-bold tracking-wider uppercase text-xs text-slate-100">
+                  <Sparkles
+                    className={`h-4 w-4 ${
+                      scorigamiInfo.isCurrentScorigami ? 'text-violet-300 animate-pulse' : 'text-orange-400'
+                    }`}
+                  />
+                  {scorigamiInfo.isCurrentScorigami ? '✨ Live NBA Scorigami in Progress' : isFinal ? 'Final Scorigami Status' : 'Scorigami Probability'}
+                </span>
+                <span
+                  className={`font-mono font-bold text-xs tabular-nums px-2.5 py-0.5 rounded ${
+                    scorigamiInfo.isCurrentScorigami
+                      ? 'bg-violet-500/30 text-violet-100 border border-violet-400/50'
+                      : 'bg-white/[0.1] text-white border border-white/[0.15]'
+                  }`}
+                >
+                  {scorigamiInfo.chanceLabel}
+                </span>
+              </div>
+
+              {scorigamiInfo.mostLikelyNovel && (
+                <div className="flex items-center justify-between py-1.5 px-2.5 rounded-lg bg-black/30 border border-white/[0.06] mb-2">
+                  <span className="text-slate-300 font-medium">Nearest Novel Final Score:</span>
+                  <span className="font-mono text-sm font-bold text-violet-200 bg-violet-950/90 px-2.5 py-0.5 rounded border border-violet-600/60">
+                    {scorigamiInfo.mostLikelyLabel}
+                  </span>
+                </div>
+              )}
+
+              <div className="text-xs leading-relaxed text-slate-300">
+                <strong className="text-white font-semibold">Live Condition: </strong>
+                {scorigamiInfo.whenScenario}
+              </div>
+
+              {scorigamiInfo.lastGameSummary && (
+                <div className="mt-2.5 flex items-start gap-1.5 text-xs text-slate-300 border-t border-white/[0.06] pt-2.5">
+                  <span className="font-semibold text-white shrink-0">Historical Record:</span>
+                  <span className="text-slate-200">
+                    <strong className="text-amber-300 font-semibold">{scorigamiInfo.lastGameSummary}</strong>
+                    <span className="text-slate-400 ml-1.5 font-mono text-[11px]">
+                      ({scorigamiInfo.currentOccurrences}x in NBA history)
+                    </span>
+                  </span>
+                </div>
+              )}
+            </div>
+
+            {/* Tactical Basketball Court & Momentum Radar */}
+            <div className="rounded-xl border border-white/[0.12] bg-[#080d1a] p-3.5 shadow-md">
+              <CourtDiagram
+                situation={situation}
+                competitors={competitors}
+                shots={competition.shots}
+                gameState={state}
+                gameStatusDetail={status?.type?.detail}
+                isHero={true}
+                status={status}
+              />
+            </div>
+          </div>
         </div>
       </div>
     </section>

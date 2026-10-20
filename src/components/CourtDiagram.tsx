@@ -72,8 +72,8 @@ export const CourtDiagram: React.FC<CourtDiagramProps> = memo(({
 
   return (
     <div className={`flex flex-col space-y-3.5 w-full ${isHero ? 'hero-court-diagram' : ''}`}>
-      {/* Top Hoops Momentum Banner (Hoops Drive Equivalent) */}
-      <div className="flex flex-wrap items-center justify-between gap-2.5 rounded-xl border border-white/[0.08] bg-[#070b14]/90 p-2.5 sm:p-3 shadow-md backdrop-blur-md">
+      {/* Top Hoops Momentum Banner */}
+      <div className="flex flex-wrap items-center justify-between gap-2.5 rounded-xl border border-white/[0.15] bg-[#0c1424] p-2.5 sm:p-3 shadow-md backdrop-blur-md">
         {/* Left: Possession & Scoring Run */}
         <div className="flex flex-wrap items-center gap-2 sm:gap-3 min-w-0">
           <div className="flex items-center gap-1.5 shrink-0">
@@ -94,7 +94,7 @@ export const CourtDiagram: React.FC<CourtDiagramProps> = memo(({
           </div>
 
           {scoringRun && (
-            <span className="inline-flex items-center gap-1 rounded bg-orange-600/25 border border-orange-500/40 px-2 py-0.5 text-[10px] sm:text-[11px] font-bold text-orange-200 animate-pulse">
+            <span className="inline-flex items-center gap-1 rounded bg-orange-600/35 border border-orange-500/60 px-2 py-0.5 text-[10px] sm:text-[11px] font-bold text-orange-100 animate-pulse">
               <Flame className="h-3 w-3 text-orange-400 fill-orange-400 shrink-0" />
               <span>
                 {scoringRun.teamAbbr} {scoringRun.points}-{scoringRun.opponentPoints} Run
@@ -104,8 +104,8 @@ export const CourtDiagram: React.FC<CourtDiagramProps> = memo(({
           )}
 
           {isClutch && (
-            <span className="inline-flex items-center gap-1 rounded bg-rose-600/30 border border-rose-500/50 px-2 py-0.5 text-[10px] sm:text-[11px] font-extrabold text-rose-200 animate-pulse">
-              <ShieldAlert className="h-3 w-3 text-rose-400 shrink-0" />
+            <span className="inline-flex items-center gap-1 rounded bg-rose-600/40 border border-rose-500/60 px-2 py-0.5 text-[10px] sm:text-[11px] font-extrabold text-rose-100 animate-pulse">
+              <ShieldAlert className="h-3 w-3 text-rose-300 shrink-0" />
               <span>CLUTCH (≤5 PTS)</span>
             </span>
           )}
@@ -115,12 +115,12 @@ export const CourtDiagram: React.FC<CourtDiagramProps> = memo(({
         <div className="flex items-center gap-2 sm:gap-3 font-mono text-xs shrink-0">
           {/* Shot Clock */}
           {gameState === 'in' && (
-            <div className="flex items-center gap-1.5 bg-black/60 border border-white/[0.1] px-2.5 py-1 rounded-md">
-              <Clock className="h-3 w-3 text-slate-400" />
-              <span className="text-slate-400 text-[10px] uppercase tracking-wider font-semibold">Shot Clock:</span>
+            <div className="flex items-center gap-1.5 bg-black/70 border border-white/[0.15] px-2.5 py-1 rounded-md">
+              <Clock className="h-3 w-3 text-slate-300" />
+              <span className="text-slate-300 text-[10px] uppercase tracking-wider font-semibold">Shot Clock:</span>
               <span
                 className={`font-extrabold tabular-nums ${
-                  shotClock <= 5 ? 'text-rose-400 animate-pulse' : 'text-amber-400'
+                  shotClock <= 5 ? 'text-rose-400 animate-pulse' : 'text-amber-300'
                 }`}
               >
                 {shotClock}s
@@ -130,12 +130,12 @@ export const CourtDiagram: React.FC<CourtDiagramProps> = memo(({
 
           {/* Team Fouls & Bonus */}
           <div className="hidden sm:flex items-center gap-2 text-[11px]">
-            <span className="text-slate-400">
+            <span className="text-slate-300">
               {awayAbbr} Fouls: <strong className="text-white">{awayFouls}</strong>
               {awayFouls >= 5 && <span className="ml-1 text-rose-400 font-bold">(BONUS)</span>}
             </span>
-            <span className="text-slate-600">|</span>
-            <span className="text-slate-400">
+            <span className="text-slate-500">|</span>
+            <span className="text-slate-300">
               {homeAbbr} Fouls: <strong className="text-white">{homeFouls}</strong>
               {homeFouls >= 5 && <span className="ml-1 text-rose-400 font-bold">(BONUS)</span>}
             </span>
@@ -144,17 +144,17 @@ export const CourtDiagram: React.FC<CourtDiagramProps> = memo(({
       </div>
 
       {/* Interactive Court SVG Visualizer */}
-      <div className="relative rounded-2xl border border-white/[0.08] bg-[#090e18] p-3 sm:p-4 overflow-hidden shadow-xl">
+      <div className="relative rounded-xl border border-white/[0.15] bg-[#080d1a] p-3 sm:p-4 overflow-hidden shadow-xl">
         {/* Court Controls Bar */}
         <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
           {/* View Mode Toggle: Shots vs Zones */}
-          <div className="flex items-center rounded-lg bg-black/40 border border-white/[0.08] p-0.5 text-xs">
+          <div className="flex items-center rounded-lg bg-black/60 border border-white/[0.12] p-0.5 text-xs">
             <button
               onClick={() => setViewMode('shots')}
               className={`flex items-center gap-1 px-2.5 py-1 rounded font-semibold transition-colors ${
                 viewMode === 'shots'
-                  ? 'bg-sky-500/25 text-sky-200 border border-sky-400/30'
-                  : 'text-slate-400 hover:text-white'
+                  ? 'bg-sky-500/30 text-sky-100 border border-sky-400/50'
+                  : 'text-slate-300 hover:text-white'
               }`}
             >
               <Crosshair className="h-3 w-3" />
@@ -343,16 +343,28 @@ export const CourtDiagram: React.FC<CourtDiagramProps> = memo(({
             <text
               x="30"
               y="255"
-              fontSize="16"
-              fontWeight="800"
+              fontSize="18"
+              fontWeight="900"
               fontFamily="Oswald"
               fill="#ffffff"
-              fillOpacity="0.25"
+              fillOpacity="0.75"
               transform="rotate(-90 30 255)"
               textAnchor="middle"
               letterSpacing="3"
             >
               {awayAbbr}
+            </text>
+            <text
+              x="120"
+              y="42"
+              fontSize="12"
+              fontWeight="bold"
+              fontFamily="sans-serif"
+              fill="#ffffff"
+              fillOpacity="0.9"
+              textAnchor="middle"
+            >
+              {awayAbbr} BASKET
             </text>
 
             {/* ---------------- RIGHT BASKET (HOME DEFENSE / AWAY ATTACK) ---------------- */}
@@ -409,16 +421,28 @@ export const CourtDiagram: React.FC<CourtDiagramProps> = memo(({
             <text
               x="910"
               y="255"
-              fontSize="16"
-              fontWeight="800"
+              fontSize="18"
+              fontWeight="900"
               fontFamily="Oswald"
               fill="#ffffff"
-              fillOpacity="0.25"
+              fillOpacity="0.75"
               transform="rotate(90 910 255)"
               textAnchor="middle"
               letterSpacing="3"
             >
               {homeAbbr}
+            </text>
+            <text
+              x="820"
+              y="42"
+              fontSize="12"
+              fontWeight="bold"
+              fontFamily="sans-serif"
+              fill="#ffffff"
+              fillOpacity="0.9"
+              textAnchor="middle"
+            >
+              {homeAbbr} BASKET
             </text>
 
             {/* ---------------- ZONE HEATMAP OVERLAY (IF VIEWMODE === 'ZONES') ---------------- */}

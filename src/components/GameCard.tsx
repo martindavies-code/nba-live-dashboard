@@ -78,20 +78,20 @@ export const GameCard: React.FC<GameCardProps> = memo(({
       onClick={onSpotlight}
       className={`group relative flex flex-col rounded-xl border transition-all duration-300 cursor-pointer overflow-hidden ${
         isSpotlighted
-          ? 'border-sky-500/70 bg-gradient-to-b from-[#0b162c] to-[#080d1a] shadow-xl shadow-sky-950/40 ring-1 ring-sky-500/40'
-          : 'border-white/[0.08] bg-[#070b14] hover:border-white/[0.2] hover:bg-[#090f1d] shadow-md'
+          ? 'border-orange-500/80 bg-[#0e172c] shadow-xl shadow-orange-950/40 ring-1 ring-orange-500/60'
+          : 'border-white/[0.15] bg-[#0c1322] hover:border-orange-500/60 hover:bg-[#10192d] shadow-md'
       }`}
     >
       {/* Card Header Strip */}
-      <div className="flex items-center justify-between border-b border-white/[0.06] bg-black/30 px-3.5 py-2 text-xs">
+      <div className="flex items-center justify-between border-b border-white/[0.1] bg-black/40 px-3.5 py-2 text-xs">
         <div className="flex items-center gap-2">
           {isLive ? (
-            <span className="flex items-center gap-1.5 font-mono font-bold text-emerald-400">
+            <span className="flex items-center gap-1.5 font-mono font-bold text-emerald-300">
               <span className="h-2 w-2 rounded-full bg-emerald-400 animate-pulse" />
               Q{status.period} {status.displayClock}
             </span>
           ) : (
-            <span className="font-mono text-slate-400 font-semibold text-[11px]">
+            <span className="font-mono text-slate-300 font-semibold text-[11px]">
               {status.type?.detail || 'Scheduled'}
             </span>
           )}
@@ -100,16 +100,16 @@ export const GameCard: React.FC<GameCardProps> = memo(({
         <div className="flex items-center gap-2">
           {/* Clutch Alert */}
           {isClutch && (
-            <span className="inline-flex items-center gap-0.5 rounded bg-rose-600/30 border border-rose-500/50 px-1.5 py-0.5 text-[10px] font-black text-rose-300 animate-pulse">
-              <ShieldAlert className="h-3 w-3 text-rose-400" />
+            <span className="inline-flex items-center gap-0.5 rounded bg-rose-600/40 border border-rose-500/60 px-1.5 py-0.5 text-[10px] font-black text-rose-200 animate-pulse">
+              <ShieldAlert className="h-3 w-3 text-rose-300" />
               CLUTCH
             </span>
           )}
 
           {/* Broadcast Network */}
           {crew?.network && (
-            <span className="inline-flex items-center gap-1 text-[11px] font-medium text-slate-400">
-              <Tv className="h-3 w-3 text-slate-500" />
+            <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-sky-200 bg-sky-500/15 border border-sky-400/30 px-1.5 py-0.5 rounded">
+              <Tv className="h-3 w-3 text-sky-400" />
               {crew.network}
             </span>
           )}
@@ -121,7 +121,7 @@ export const GameCard: React.FC<GameCardProps> = memo(({
                 e.stopPropagation()
                 onSpotlight()
               }}
-              className="flex items-center gap-1 rounded bg-slate-800/80 hover:bg-sky-600 hover:text-white px-2 py-0.5 text-[10px] font-semibold text-slate-300 transition-colors"
+              className="flex items-center gap-1 rounded bg-slate-800 hover:bg-orange-600 hover:text-white px-2 py-0.5 text-[10px] font-semibold text-slate-200 transition-colors border border-white/[0.1]"
               title="Pin matchup to Spotlight Hero"
             >
               <Maximize2 className="h-3 w-3" />

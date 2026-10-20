@@ -222,4 +222,4 @@ export interface NBAScoreboardData {
   }
 }
 
-export type GameFilter = 'all' | 'live' | 'clutch' | 'fourth' | 'halftime' | 'upcoming' | 'final'
+export type GameFilter = 'all' | 'live' | 'clutch' | 'upcoming' | 'final'

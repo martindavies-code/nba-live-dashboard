@@ -55,8 +55,8 @@ export const WinProbabilityBar: React.FC<WinProbabilityBarProps> = memo(({
     <div className="w-full space-y-1.5">
       <div className="flex items-center justify-between gap-1 text-xs font-mono">
         <div className="flex items-center gap-1.5 font-bold shrink-0">
-          <span className="h-2 w-2 rounded-full shrink-0" style={{ backgroundColor: awayColor }} />
-          <span className="text-slate-300">{awayAbbr}</span>
+          <span className="h-2.5 w-2.5 rounded-full shrink-0 shadow-sm" style={{ backgroundColor: awayColor }} />
+          <span className="text-slate-200">{awayAbbr}</span>
           <span className="text-white tabular-nums font-black">{calculatedAwayPct}%</span>
         </div>
 
@@ -64,25 +64,25 @@ export const WinProbabilityBar: React.FC<WinProbabilityBarProps> = memo(({
         <div className="flex items-center justify-center gap-1.5 px-1 truncate max-w-[150px] sm:max-w-none">
           {gameState === 'in' ? (
             <span
-              className="inline-flex items-center gap-1 rounded bg-emerald-500/15 border border-emerald-400/35 px-1.5 py-0.5 text-[9px] sm:text-[10px] font-bold text-emerald-300 font-sans tracking-wide shrink-0"
+              className="inline-flex items-center gap-1 rounded bg-emerald-500/20 border border-emerald-400/50 px-2 py-0.5 text-[9px] sm:text-[10px] font-bold text-emerald-200 font-sans tracking-wide shrink-0"
               title="Real-time live model updated continuously with score margin, possession, foul bonus & time"
             >
               <span className="h-1.5 w-1.5 rounded-full bg-emerald-400 animate-pulse" />
               LIVE PROB
             </span>
           ) : gameState === 'post' ? (
-            <span className="text-[9px] sm:text-[10px] font-bold text-slate-400 font-sans uppercase tracking-wider shrink-0">
+            <span className="text-[9px] sm:text-[10px] font-bold text-slate-300 font-sans uppercase tracking-wider shrink-0">
               FINAL
             </span>
           ) : (
-            <span className="text-[9px] sm:text-[10px] font-semibold text-amber-300/80 font-sans uppercase tracking-wide shrink-0">
+            <span className="text-[9px] sm:text-[10px] font-bold text-amber-300 font-sans uppercase tracking-wide shrink-0">
               TIP-OFF
             </span>
           )}
 
           {(oddsText || overUnderText) && (
             <span
-              className="text-[10px] text-slate-400 font-sans truncate max-w-[130px] sm:max-w-none"
+              className="text-[10px] text-slate-300 font-sans truncate max-w-[130px] sm:max-w-none"
               title={`${oddsText || ''} ${overUnderText ? `• ${overUnderText}` : ''}`.trim()}
             >
               {oddsText} {overUnderText && `• ${overUnderText}`}
@@ -92,13 +92,13 @@ export const WinProbabilityBar: React.FC<WinProbabilityBarProps> = memo(({
 
         <div className="flex items-center gap-1.5 font-bold shrink-0">
           <span className="text-white tabular-nums font-black">{calculatedHomePct}%</span>
-          <span className="text-slate-300">{homeAbbr}</span>
-          <span className="h-2 w-2 rounded-full shrink-0" style={{ backgroundColor: homeColor }} />
+          <span className="text-slate-200">{homeAbbr}</span>
+          <span className="h-2.5 w-2.5 rounded-full shrink-0 shadow-sm" style={{ backgroundColor: homeColor }} />
         </div>
       </div>
 
       {/* Split Bar */}
-      <div className="relative flex h-2.5 w-full overflow-hidden rounded-full bg-slate-900 border border-white/[0.08]">
+      <div className="relative flex h-2.5 w-full overflow-hidden rounded-full bg-slate-900 border border-white/[0.18]">
         <div
           className="h-full transition-all duration-700 ease-out"
           style={{ width: `${calculatedAwayPct}%`, backgroundColor: awayColor }}

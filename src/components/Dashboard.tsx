@@ -10,16 +10,13 @@ import {
   playTactileClick,
 } from '../utils/audioFeedback'
 import { KeyboardShortcutsModal } from './KeyboardShortcutsModal'
-import { DataSourcesModal } from './DataSourcesModal'
 import {
   RefreshCw,
   Search,
   WifiOff,
   Volume2,
   VolumeX,
-  Eye,
   Keyboard,
-  Database,
   AlertCircle,
 } from 'lucide-react'
 
@@ -86,7 +83,6 @@ export const Dashboard: React.FC = () => {
   const [error, setError] = useState<string | null>(null)
   const [filter, setFilter] = useState<GameFilter>('all')
   const [searchQuery, setSearchQuery] = useState<string>('')
-  const [lastUpdated, setLastUpdated] = useState<Date>(new Date())
   const [selectedHeroId, setSelectedHeroId] = useState<string | null>(null)
   const [selectedDate, setSelectedDate] = useState<string>(() => new Date().toISOString().slice(0, 10))
   const [isOnline, setIsOnline] = useState<boolean>(typeof navigator !== 'undefined' ? navigator.onLine : true)
@@ -95,12 +91,7 @@ export const Dashboard: React.FC = () => {
     return safeStorage.getItem('nba_muted') === 'true'
   })
 
-  const [isHighContrast, setIsHighContrast] = useState<boolean>(() => {
-    return safeStorage.getItem('nba_high_contrast') === 'true'
-  })
-
   const [isShortcutsOpen, setIsShortcutsOpen] = useState<boolean>(false)
-  const [isSourcesOpen, setIsSourcesOpen] = useState<boolean>(false)
   const [srAnnouncement, setSrAnnouncement] = useState<string>('')
 
   const abortControllerRef = useRef<AbortController | null>(null)
@@ -122,16 +113,6 @@ export const Dashboard: React.FC = () => {
     }
   }, [])
 
-  // High contrast mode class on document
-  useEffect(() => {
-    if (isHighContrast) {
-      document.documentElement.classList.add('high-contrast')
-    } else {
-      document.documentElement.classList.remove('high-contrast')
-    }
-    safeStorage.setItem('nba_high_contrast', String(isHighContrast))
-  }, [isHighContrast])
-
   // Fetch function with AbortController
   const loadData = useCallback(async (isManual = false, overrideDate?: string) => {
     if (isManual) setIsRefreshing(true)
@@ -147,7 +128,6 @@ export const Dashboard: React.FC = () => {
     try {
       const result = await fetchNBAScoreboard(dateToFetch, controller.signal)
       setData(result.data)
-      setLastUpdated(new Date())
       setError(null)
     } catch (err: unknown) {
       if (err instanceof Error && err.name !== 'AbortError') {
@@ -200,9 +180,6 @@ export const Dashboard: React.FC = () => {
           setSrAnnouncement(next ? 'Sound cues muted' : 'Sound cues active')
           return next
         })
-      } else if (e.key.toLowerCase() === 'h') {
-        e.preventDefault()
-        setIsHighContrast((prev) => !prev)
       } else if (e.key === ' ' || e.code === 'Space') {
         e.preventDefault()
         if (!isMuted) playTactileClick()
@@ -210,10 +187,8 @@ export const Dashboard: React.FC = () => {
       } else if (e.key === '1') setFilter('all')
       else if (e.key === '2') setFilter('live')
       else if (e.key === '3') setFilter('clutch')
-      else if (e.key === '4') setFilter('fourth')
-      else if (e.key === '5') setFilter('halftime')
-      else if (e.key === '6') setFilter('upcoming')
-      else if (e.key === '7') setFilter('final')
+      else if (e.key === '4') setFilter('upcoming')
+      else if (e.key === '5') setFilter('final')
     }
 
     window.addEventListener('keydown', handleKeyDown)
@@ -227,7 +202,6 @@ export const Dashboard: React.FC = () => {
     return events.filter((ev) => {
       const comp = ev.competitions?.[0]
       const state = ev.status?.type?.state
-      const period = ev.status?.period
 
       // Text Search
       if (searchQuery.trim()) {
@@ -245,10 +219,6 @@ export const Dashboard: React.FC = () => {
       // Category Tabs
       if (filter === 'live') return state === 'in'
       if (filter === 'clutch') return isClutchGame(ev.status, comp?.competitors)
-      if (filter === 'fourth') return state === 'in' && period >= 4
-      if (filter === 'halftime') {
-        return ev.status?.type?.name === 'STATUS_HALFTIME' || ev.status?.type?.detail === 'Halftime'
-      }
       if (filter === 'upcoming') return state === 'pre'
       if (filter === 'final') return state === 'post'
       return true
@@ -261,10 +231,6 @@ export const Dashboard: React.FC = () => {
       all: events.length,
       live: events.filter((e) => e.status?.type?.state === 'in').length,
       clutch: events.filter((e) => isClutchGame(e.status, e.competitions?.[0]?.competitors)).length,
-      fourth: events.filter((e) => e.status?.type?.state === 'in' && e.status?.period >= 4).length,
-      halftime: events.filter(
-        (e) => e.status?.type?.name === 'STATUS_HALFTIME' || e.status?.type?.detail === 'Halftime'
-      ).length,
       upcoming: events.filter((e) => e.status?.type?.state === 'pre').length,
       final: events.filter((e) => e.status?.type?.state === 'post').length,
     }
@@ -290,7 +256,7 @@ export const Dashboard: React.FC = () => {
     [isMuted]
   )
 
-  const isTickerPaused = typeof document !== 'undefined' && document.hidden || isShortcutsOpen || isSourcesOpen
+  const isTickerPaused = (typeof document !== 'undefined' && document.hidden) || isShortcutsOpen
 
   return (
     <div className="min-h-screen bg-[#060a12] text-slate-100 flex flex-col font-sans">
@@ -341,8 +307,8 @@ export const Dashboard: React.FC = () => {
                   LIVE FEED
                 </span>
               </div>
-              <p className="text-[11px] text-slate-400 hidden md:block">
-                Announcing Crews • Dynamic Court Shot Radar • Live NBA Scorigami Engine
+              <p className="text-[11px] text-slate-300 font-medium hidden md:block">
+                Real-Time Scores, Dynamic Win Probability & Broadcast Crews
               </p>
             </div>
           </div>
@@ -356,23 +322,8 @@ export const Dashboard: React.FC = () => {
             />
           </div>
 
-          {/* Right Controls: Auto-Poll Ticker, Audio, High Contrast, Modals */}
+          {/* Right Controls: Auto-Poll Ticker, Audio, Shortcuts */}
           <div className="order-2 lg:order-3 flex items-center gap-1.5 sm:gap-2 ml-auto lg:ml-0">
-            {/* Last updated timestamp */}
-            <span className="hidden xl:inline text-[10px] font-mono text-slate-400">
-              Synced {lastUpdated.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
-            </span>
-
-            {/* Switcher to NFL Dashboard */}
-            <a
-              href="https://martindavies-code.github.io/nfl-live-dashboard/"
-              className="hidden sm:flex items-center gap-1 rounded-lg border border-white/[0.1] bg-white/[0.04] hover:bg-white/[0.08] hover:text-white px-2.5 py-1 text-xs font-semibold text-slate-300 transition-colors"
-              title="Switch to NFL Live Command Center"
-            >
-              <span>🏈</span>
-              <span>NFL Command</span>
-            </a>
-
             {/* Auto-poll Countdown Pill */}
             <AutoRefreshTicker
               isPaused={isTickerPaused}
@@ -386,7 +337,7 @@ export const Dashboard: React.FC = () => {
                 if (!isMuted) playTactileClick()
                 loadData(true)
               }}
-              className="p-1.5 rounded-lg border border-white/[0.08] bg-white/[0.04] text-slate-300 hover:text-white hover:bg-white/[0.08] transition-colors"
+              className="p-1.5 rounded-lg border border-white/[0.15] bg-white/[0.06] text-slate-200 hover:text-white hover:bg-white/[0.12] transition-colors"
               title="Refresh Now (Space)"
               aria-label="Refresh live scores"
             >
@@ -403,8 +354,8 @@ export const Dashboard: React.FC = () => {
               }}
               className={`p-1.5 rounded-lg border transition-colors ${
                 isMuted
-                  ? 'border-white/[0.08] bg-white/[0.04] text-slate-400 hover:text-slate-200'
-                  : 'border-orange-500/40 bg-orange-500/15 text-orange-300'
+                  ? 'border-white/[0.12] bg-white/[0.04] text-slate-400 hover:text-slate-200'
+                  : 'border-orange-500/50 bg-orange-500/20 text-orange-200'
               }`}
               title={isMuted ? 'Unmute Arena Audio (M)' : 'Mute Audio (M)'}
               aria-label="Toggle arena sound cues"
@@ -412,52 +363,26 @@ export const Dashboard: React.FC = () => {
               {isMuted ? <VolumeX className="h-4 w-4" /> : <Volume2 className="h-4 w-4" />}
             </button>
 
-            {/* High Contrast Toggle */}
-            <button
-              onClick={() => setIsHighContrast((prev) => !prev)}
-              className={`p-1.5 rounded-lg border transition-colors ${
-                isHighContrast
-                  ? 'border-sky-500/50 bg-sky-500/20 text-sky-200'
-                  : 'border-white/[0.08] bg-white/[0.04] text-slate-400 hover:text-slate-200'
-              }`}
-              title="Toggle High Contrast Pro (H)"
-              aria-label="Toggle high contrast mode"
-            >
-              <Eye className="h-4 w-4" />
-            </button>
-
             {/* Shortcuts Modal Button */}
             <button
               onClick={() => setIsShortcutsOpen(true)}
-              className="p-1.5 rounded-lg border border-white/[0.08] bg-white/[0.04] text-slate-400 hover:text-slate-200 transition-colors"
+              className="p-1.5 rounded-lg border border-white/[0.12] bg-white/[0.04] text-slate-300 hover:text-white hover:bg-white/[0.08] transition-colors"
               title="Keyboard Shortcuts (?)"
               aria-label="Open keyboard shortcuts"
             >
               <Keyboard className="h-4 w-4" />
             </button>
-
-            {/* Data Pipeline Modal Button */}
-            <button
-              onClick={() => setIsSourcesOpen(true)}
-              className="p-1.5 rounded-lg border border-white/[0.08] bg-white/[0.04] text-slate-400 hover:text-slate-200 transition-colors"
-              title="Data Pipeline & Scorigami Docs"
-              aria-label="Open data pipeline information"
-            >
-              <Database className="h-4 w-4" />
-            </button>
           </div>
         </div>
 
         {/* Filter Navigation & Search Bar Strip */}
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-2 flex flex-col md:flex-row md:items-center justify-between gap-2.5 border-t border-white/[0.04]">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-2 flex flex-col md:flex-row md:items-center justify-between gap-2.5 border-t border-white/[0.08]">
           {/* Filter Tabs */}
           <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar scroll-smooth py-1 w-full md:w-auto -mx-1 px-1">
             {[
               { id: 'all', label: 'All Matchups', count: tabCounts.all },
               { id: 'live', label: 'Live Now', count: tabCounts.live },
               { id: 'clutch', label: '🔥 Clutch (≤5 pts)', count: tabCounts.clutch },
-              { id: 'fourth', label: '4th Quarter', count: tabCounts.fourth },
-              { id: 'halftime', label: 'Halftime', count: tabCounts.halftime },
               { id: 'upcoming', label: 'Upcoming', count: tabCounts.upcoming },
               { id: 'final', label: 'Final', count: tabCounts.final },
             ].map((tab) => (
@@ -469,14 +394,14 @@ export const Dashboard: React.FC = () => {
                 }}
                 className={`flex items-center gap-1.5 px-3 py-1 rounded-lg font-semibold transition-colors shrink-0 text-xs ${
                   filter === tab.id
-                    ? 'bg-orange-500 text-white shadow-sm shadow-orange-950'
-                    : 'text-slate-400 hover:text-white hover:bg-white/[0.04]'
+                    ? 'bg-orange-500 text-white shadow-sm shadow-orange-950 font-bold'
+                    : 'text-slate-300 hover:text-white hover:bg-white/[0.08] border border-transparent'
                 }`}
               >
                 <span>{tab.label}</span>
                 <span
                   className={`font-mono text-[10px] rounded-full px-1.5 py-0.2 ${
-                    filter === tab.id ? 'bg-black/30 text-white' : 'bg-white/[0.08] text-slate-300'
+                    filter === tab.id ? 'bg-black/30 text-white font-bold' : 'bg-white/[0.1] text-slate-200'
                   }`}
                 >
                   {tab.count}
@@ -493,7 +418,7 @@ export const Dashboard: React.FC = () => {
               placeholder="Filter by team, city..."
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              className="w-full rounded-lg border border-white/[0.08] bg-[#090f1c] py-1 pl-8 pr-3 text-xs text-slate-200 placeholder:text-slate-500 focus:outline-none focus:ring-1 focus:ring-orange-500"
+              className="w-full rounded-lg border border-white/[0.15] bg-[#0c1322] py-1 pl-8 pr-3 text-xs text-slate-100 placeholder:text-slate-400 focus:outline-none focus:ring-1 focus:ring-orange-500 focus:border-orange-500"
             />
           </div>
         </div>
@@ -553,10 +478,6 @@ export const Dashboard: React.FC = () => {
       <KeyboardShortcutsModal
         isOpen={isShortcutsOpen}
         onClose={() => setIsShortcutsOpen(false)}
-      />
-      <DataSourcesModal
-        isOpen={isSourcesOpen}
-        onClose={() => setIsSourcesOpen(false)}
       />
 
       {/* Footer */}

@@ -9,15 +9,12 @@ interface ShortcutItem {
 }
 
 const SHORTCUTS: ShortcutItem[] = [
-  { keyLabel: '1', action: 'Filter: All Games', category: 'Filters' },
+  { keyLabel: '1', action: 'Filter: All Matchups', category: 'Filters' },
   { keyLabel: '2', action: 'Filter: Live Games', category: 'Filters' },
   { keyLabel: '3', action: 'Filter: Clutch Games (≤5 pts)', category: 'Filters' },
-  { keyLabel: '4', action: 'Filter: 4th Quarter', category: 'Filters' },
-  { keyLabel: '5', action: 'Filter: Halftime', category: 'Filters' },
-  { keyLabel: '6', action: 'Filter: Upcoming', category: 'Filters' },
-  { keyLabel: '7', action: 'Filter: Final Games', category: 'Filters' },
+  { keyLabel: '4', action: 'Filter: Upcoming', category: 'Filters' },
+  { keyLabel: '5', action: 'Filter: Final Games', category: 'Filters' },
   { keyLabel: 'M', action: 'Toggle audio sound cues', category: 'Controls' },
-  { keyLabel: 'H', action: 'Toggle High Contrast Pro mode', category: 'Controls' },
   { keyLabel: 'Space', action: 'Trigger immediate manual refresh', category: 'Controls' },
   { keyLabel: 'ArrowDown', action: 'Spotlight next game', category: 'Navigation' },
   { keyLabel: 'ArrowUp', action: 'Spotlight previous game', category: 'Navigation' },
