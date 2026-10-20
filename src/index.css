@@ -1,0 +1,65 @@
+@import "tailwindcss";
+
+@layer base {
+  :root {
+    --court-hardwood: #c28b48;
+    --court-lines: #ffffff;
+    --shot-make: #10b981;
+    --shot-miss: #ef4444;
+  }
+
+  body {
+    font-family: 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
+    background-color: #060a12;
+    color: #f1f5f9;
+  }
+}
+
+/* Custom Scrollbars */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: #090e18;
+}
+::-webkit-scrollbar-thumb {
+  background: #1e293b;
+  border-radius: 9999px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #334155;
+}
+
+/* High Contrast Mode */
+.high-contrast {
+  --tw-border-opacity: 1 !important;
+}
+.high-contrast .border-white\/\[0\.06\],
+.high-contrast .border-white\/\[0\.08\],
+.high-contrast .border-white\/\[0\.12\] {
+  border-color: rgba(255, 255, 255, 0.4) !important;
+}
+.high-contrast .text-slate-400,
+.high-contrast .text-slate-500 {
+  color: #cbd5e1 !important;
+}
+
+/* Radar & Pulse Animations */
+@keyframes courtPulse {
+  0%, 100% { transform: scale(1); opacity: 0.9; }
+  50% { transform: scale(1.18); opacity: 1; }
+}
+
+.animate-court-pulse {
+  animation: courtPulse 2s ease-in-out infinite;
+}
+
+@keyframes hoopGlow {
+  0%, 100% { filter: drop-shadow(0 0 4px rgba(249, 115, 22, 0.5)); }
+  50% { filter: drop-shadow(0 0 12px rgba(249, 115, 22, 0.9)); }
+}
+
+.animate-hoop-glow {
+  animation: hoopGlow 2.5s ease-in-out infinite;
+}
