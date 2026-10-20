@@ -8,6 +8,7 @@ import {
   isClutchGame,
   calculateSecondsRemaining,
   calculateWinProbability,
+  resolveHomeSpread,
   sanitizeImageUrl,
 } from '../utils/nbaHelpers'
 import {
@@ -63,8 +64,24 @@ export const HeroMatchup: React.FC<HeroMatchupProps> = memo(({ event }) => {
     awayAbbr
   )
 
-  const spread = competition.odds?.[0]?.spread ?? 0
-  const winProb = calculateWinProbability(homeScore, awayScore, secondsRemaining, state, spread)
+  const homeSpread = resolveHomeSpread(competition.odds, homeAbbr, awayAbbr)
+  const winProb = calculateWinProbability(
+    homeScore,
+    awayScore,
+    secondsRemaining,
+    state,
+    homeSpread,
+    situation
+      ? {
+          possession: situation.possession,
+          homeTeamId: homeComp?.team?.id,
+          awayTeamId: awayComp?.team?.id,
+          homeFouls: situation.homeFouls ?? homeComp?.fouls,
+          awayFouls: situation.awayFouls ?? awayComp?.fouls,
+          scoringRun: situation.scoringRun,
+        }
+      : null
+  )
 
   const handleCopySnapshot = async () => {
     const awayName = awayComp?.team?.displayName || awayAbbr

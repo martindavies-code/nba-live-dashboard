@@ -7,6 +7,7 @@ import {
   isClutchGame,
   calculateSecondsRemaining,
   calculateWinProbability,
+  resolveHomeSpread,
   sanitizeImageUrl,
 } from '../utils/nbaHelpers'
 import { formatCrewShortLabel } from '../utils/announcers'
@@ -53,8 +54,24 @@ export const GameCard: React.FC<GameCardProps> = memo(({
     awayAbbr
   )
 
-  const spread = competition.odds?.[0]?.spread ?? 0
-  const winProb = calculateWinProbability(homeScore, awayScore, secondsRemaining, state, spread)
+  const homeSpread = resolveHomeSpread(competition.odds, homeAbbr, awayAbbr)
+  const winProb = calculateWinProbability(
+    homeScore,
+    awayScore,
+    secondsRemaining,
+    state,
+    homeSpread,
+    situation
+      ? {
+          possession: situation.possession,
+          homeTeamId: homeComp?.team?.id,
+          awayTeamId: awayComp?.team?.id,
+          homeFouls: situation.homeFouls ?? homeComp?.fouls,
+          awayFouls: situation.awayFouls ?? awayComp?.fouls,
+          scoringRun: situation.scoringRun,
+        }
+      : null
+  )
 
   return (
     <article

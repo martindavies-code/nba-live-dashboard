@@ -8,6 +8,7 @@ import {
   calculateSecondsRemaining,
   resolveContrastingTeamColors,
   calculateWinProbability,
+  resolveHomeSpread,
   formatPeriodDetail,
   safeStorage,
 } from './nbaHelpers.ts'
@@ -172,14 +173,52 @@ test('calculateWinProbability calculates dynamic probabilities and bounds', () =
   assert.equal(preFav.homePct > 50, true)
   assert.equal(preFav.homePct + preFav.awayPct, 100)
 
-  // Live game tied
+  // Live game tied at halftime without possession
   const liveTied = calculateWinProbability(90, 90, 1440, 'in')
   assert.equal(liveTied.homePct, 50)
   assert.equal(liveTied.awayPct, 50)
 
-  // Live game blowout late
+  // Live game late blowout
   const liveBlowout = calculateWinProbability(115, 90, 120, 'in')
   assert.equal(liveBlowout.homePct >= 95, true)
+
+  // Live game: Ball possession increases win probability in close game late
+  const tiedWithHomePossession = calculateWinProbability(98, 98, 30, 'in', 0, {
+    possession: 'home-team-id',
+    homeTeamId: 'home-team-id',
+    awayTeamId: 'away-team-id',
+  })
+  const tiedWithAwayPossession = calculateWinProbability(98, 98, 30, 'in', 0, {
+    possession: 'away-team-id',
+    homeTeamId: 'home-team-id',
+    awayTeamId: 'away-team-id',
+  })
+  assert.ok(tiedWithHomePossession.homePct > 50, 'Team holding the ball in tie game late must have win probability advantage')
+  assert.ok(tiedWithAwayPossession.homePct < 50, 'Team on defense in tie game late must have win probability deficit')
+  assert.ok(tiedWithHomePossession.homePct > tiedWithAwayPossession.homePct)
+
+  // Live game: Insurmountable lead in final seconds
+  const leadWith4SecLeft = calculateWinProbability(104, 100, 4, 'in')
+  assert.equal(leadWith4SecLeft.homePct, 100)
+  assert.equal(leadWith4SecLeft.awayPct, 0)
+})
+
+test('resolveHomeSpread normalizes Vegas spreads relative to home franchise', () => {
+  // When away team is favored (e.g. BOS -7.5 at DET)
+  const awayFav = resolveHomeSpread([{ details: 'BOS -7.5', spread: -7.5, awayTeamOdds: { favorite: true } }], 'DET', 'BOS')
+  assert.equal(awayFav, 7.5, 'Home spread must be positive when away team is favorite')
+
+  // When home team is favored (e.g. LAL -4.5 vs GSW)
+  const homeFav = resolveHomeSpread([{ details: 'LAL -4.5', spread: -4.5, homeTeamOdds: { favorite: true } }], 'LAL', 'GSW')
+  assert.equal(homeFav, -4.5, 'Home spread must be negative when home team is favorite')
+
+  // Pick'em
+  const pickem = resolveHomeSpread([{ details: 'PK', spread: 0 }], 'MIA', 'ORL')
+  assert.equal(pickem, 0)
+
+  // Empty or invalid inputs
+  assert.equal(resolveHomeSpread([]), 0)
+  assert.equal(resolveHomeSpread(undefined), 0)
 })
 
 test('formatPeriodDetail formats various quarter and overtime states', () => {

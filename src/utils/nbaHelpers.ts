@@ -1,4 +1,4 @@
-import type { NBACompetitor, NBAStatus } from '../types/nba'
+import type { NBACompetitor, NBAStatus, NBAOdds } from '../types/nba'
 
 /**
  * Sanitizes a hex color string against CSS injection and format violations.
@@ -128,42 +128,151 @@ export function resolveContrastingTeamColors(
   return { homeColor: home, awayColor: away }
 }
 
+export interface WinProbabilitySituation {
+  possession?: string
+  homeTeamId?: string
+  awayTeamId?: string
+  homeFouls?: number
+  awayFouls?: number
+  scoringRun?: {
+    teamId?: string
+    teamAbbr?: string
+    points?: number
+    opponentPoints?: number
+  }
+}
+
 /**
- * Dynamic NBA win probability model based on score margin, time remaining, and spread.
+ * Normalizes pre-game Vegas odds spread relative to the home franchise.
+ * Returns negative if home team is favored (e.g. -7.5), positive if home team is underdog (+7.5).
+ */
+export function resolveHomeSpread(
+  odds?: NBAOdds[],
+  homeAbbr?: string,
+  awayAbbr?: string
+): number {
+  if (!odds || odds.length === 0) return 0
+  const first = odds[0]
+  if (!first) return 0
+
+  const rawSpread = typeof first.spread === 'number' && Number.isFinite(first.spread) ? first.spread : 0
+
+  const details = (first.details || '').trim().toUpperCase()
+  if (details) {
+    if (details === 'PK' || details === 'EVEN') return 0
+    const match = details.match(/^([A-Z]{2,4})\s*([+-]?\d+(?:\.\d+)?)$/)
+    if (match) {
+      const favTeam = match[1]
+      const spreadVal = parseFloat(match[2])
+      if (homeAbbr && favTeam === homeAbbr.toUpperCase()) {
+        return spreadVal
+      }
+      if (awayAbbr && favTeam === awayAbbr.toUpperCase()) {
+        return -spreadVal
+      }
+    }
+  }
+
+  if (first.awayTeamOdds?.favorite) {
+    return Math.abs(rawSpread)
+  }
+  if (first.homeTeamOdds?.favorite) {
+    return -Math.abs(rawSpread)
+  }
+
+  return rawSpread
+}
+
+/**
+ * Dynamic NBA in-game win probability model.
+ * Factors in live score margin, precise time remaining, possession value (~1.1 pts),
+ * bonus foul penalties, scoring run momentum, and decaying pre-game spread expectation.
  */
 export function calculateWinProbability(
   homeScore: unknown,
   awayScore: unknown,
   secondsRemaining: number,
   gameState = 'in',
-  spread = 0
+  homeSpread = 0,
+  situation?: WinProbabilitySituation | null
 ): { homePct: number; awayPct: number } {
   const hScore = safeParseInt(homeScore, 0, 0)
   const aScore = safeParseInt(awayScore, 0, 0)
 
+  // 1. Post-Game: Conclusive result
   if (gameState === 'post') {
     if (hScore > aScore) return { homePct: 100, awayPct: 0 }
     if (aScore > hScore) return { homePct: 0, awayPct: 100 }
     return { homePct: 50, awayPct: 50 }
   }
 
-  if (gameState === 'pre') {
-    // Pre-game estimate based on spread (every 1 point spread ~ 3% win prob shift from 50%)
-    const homeProb = Math.max(10, Math.min(90, Math.round(50 - spread * 3)))
-    return { homePct: homeProb, awayPct: 100 - homeProb }
+  const cleanSpread = typeof homeSpread === 'number' && Number.isFinite(homeSpread) ? homeSpread : 0
+
+  // 2. Pre-Game: Based on pregame spread line (1 pt spread ≈ 3% win prob shift from 50%)
+  if (gameState === 'pre' || (secondsRemaining >= 2880 && hScore === 0 && aScore === 0)) {
+    const zPregame = -cleanSpread / 11.5
+    const homeProb = 1 / (1 + Math.exp(-1.702 * zPregame))
+    const homePct = Math.max(5, Math.min(95, Math.round(homeProb * 100)))
+    return { homePct, awayPct: 100 - homePct }
   }
 
+  // 3. Live In-Game Dynamic Real-Time Model
   const scoreDiff = hScore - aScore
-  const safeSec = Math.max(1, Math.min(2880, secondsRemaining))
-  const timeWeight = 1 - Math.sqrt(safeSec / 2880)
+  const safeSec = Math.max(1, Math.min(2880, Number.isFinite(secondsRemaining) ? secondsRemaining : 2880))
+  const timeRatio = safeSec / 2880
 
-  // Sigmoid-based probability estimation
-  const leadAdvantage = scoreDiff * (1.2 + timeWeight * 3.5)
-  const oddsPrior = (1 - timeWeight) * (-spread * 0.8)
-  const z = (leadAdvantage + oddsPrior) / 10
+  // Pre-game spread expectation decays linearly with time remaining
+  const spreadExpectation = -cleanSpread * timeRatio
 
-  const prob = 1 / (1 + Math.exp(-z))
-  const homePct = Math.max(1, Math.min(99, Math.round(prob * 100)))
+  // Ball possession value: offensive team holds ~1.1 pts expected value
+  let possessionAdjustment = 0
+  if (situation?.possession) {
+    if (situation.homeTeamId && situation.possession === situation.homeTeamId) {
+      possessionAdjustment = 0.85
+    } else if (situation.awayTeamId && situation.possession === situation.awayTeamId) {
+      possessionAdjustment = -0.85
+    }
+  }
+
+  // Bonus foul penalty advantage (+0.35 pts expected)
+  let bonusAdjustment = 0
+  if (typeof situation?.awayFouls === 'number' && situation.awayFouls >= 5) {
+    bonusAdjustment += 0.35
+  }
+  if (typeof situation?.homeFouls === 'number' && situation.homeFouls >= 5) {
+    bonusAdjustment -= 0.35
+  }
+
+  // Scoring Run Momentum
+  let momentumAdjustment = 0
+  if (situation?.scoringRun && typeof situation.scoringRun.points === 'number') {
+    const runDiff = situation.scoringRun.points - (situation.scoringRun.opponentPoints ?? 0)
+    if (runDiff > 4) {
+      const isHomeRun = situation.scoringRun.teamId === situation.homeTeamId
+      const delta = Math.min(1.5, runDiff * 0.15)
+      momentumAdjustment = isHomeRun ? delta : -delta
+    }
+  }
+
+  // Expected net point margin at regulation buzzer
+  const expectedFinalDiff = scoreDiff + spreadExpectation + possessionAdjustment + bonusAdjustment + momentumAdjustment
+
+  // Standard deviation scales with sqrt(time remaining), bounded at bottom for final possession variance
+  const sigma = 11.5 * Math.sqrt(timeRatio) + 0.35
+
+  const z = expectedFinalDiff / sigma
+  const liveProb = 1 / (1 + Math.exp(-1.702 * z))
+
+  // In the absolute final seconds, lock to 100/0 if lead is insurmountable
+  if (safeSec <= 5) {
+    if (scoreDiff > 3) return { homePct: 100, awayPct: 0 }
+    if (scoreDiff < -3) return { homePct: 0, awayPct: 100 }
+  } else if (safeSec <= 20) {
+    if (scoreDiff >= 8) return { homePct: 99, awayPct: 1 }
+    if (scoreDiff <= -8) return { homePct: 1, awayPct: 99 }
+  }
+
+  const homePct = Math.max(1, Math.min(99, Math.round(liveProb * 100)))
   return { homePct, awayPct: 100 - homePct }
 }
 

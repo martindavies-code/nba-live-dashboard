@@ -60,14 +60,35 @@ export const WinProbabilityBar: React.FC<WinProbabilityBarProps> = memo(({
           <span className="text-white tabular-nums font-black">{calculatedAwayPct}%</span>
         </div>
 
-        {(oddsText || overUnderText) && (
-          <span
-            className="text-[10px] text-slate-400 font-sans truncate px-1 text-center max-w-[130px] sm:max-w-none"
-            title={`${oddsText || ''} ${overUnderText ? `• ${overUnderText}` : ''}`.trim()}
-          >
-            {oddsText} {overUnderText && `• ${overUnderText}`}
-          </span>
-        )}
+        {/* Center Live Model / Odds Indicator */}
+        <div className="flex items-center justify-center gap-1.5 px-1 truncate max-w-[150px] sm:max-w-none">
+          {gameState === 'in' ? (
+            <span
+              className="inline-flex items-center gap-1 rounded bg-emerald-500/15 border border-emerald-400/35 px-1.5 py-0.5 text-[9px] sm:text-[10px] font-bold text-emerald-300 font-sans tracking-wide shrink-0"
+              title="Real-time live model updated continuously with score margin, possession, foul bonus & time"
+            >
+              <span className="h-1.5 w-1.5 rounded-full bg-emerald-400 animate-pulse" />
+              LIVE PROB
+            </span>
+          ) : gameState === 'post' ? (
+            <span className="text-[9px] sm:text-[10px] font-bold text-slate-400 font-sans uppercase tracking-wider shrink-0">
+              FINAL
+            </span>
+          ) : (
+            <span className="text-[9px] sm:text-[10px] font-semibold text-amber-300/80 font-sans uppercase tracking-wide shrink-0">
+              TIP-OFF
+            </span>
+          )}
+
+          {(oddsText || overUnderText) && (
+            <span
+              className="text-[10px] text-slate-400 font-sans truncate max-w-[130px] sm:max-w-none"
+              title={`${oddsText || ''} ${overUnderText ? `• ${overUnderText}` : ''}`.trim()}
+            >
+              {oddsText} {overUnderText && `• ${overUnderText}`}
+            </span>
+          )}
+        </div>
 
         <div className="flex items-center gap-1.5 font-bold shrink-0">
           <span className="text-white tabular-nums font-black">{calculatedHomePct}%</span>
