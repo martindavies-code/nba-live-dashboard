@@ -116,6 +116,49 @@ export function formatHistoricalDate(isoDate: unknown): string {
   return `${monthStr} ${d}, ${y}`
 }
 
+interface NovelCandidate {
+  hi: number
+  lo: number
+  dist: number
+}
+
+/**
+ * Searches outward from Manhattan distance 0 to locate the closest novel NBA score.
+ * Sub-millisecond performance with immediate early-exit upon finding the minimal distance candidate.
+ */
+function findNearestNovelScore(
+  safeHome: number,
+  safeAway: number,
+  projHome: number,
+  projAway: number
+): NovelCandidate | null {
+  for (let dist = 0; dist <= 20; dist++) {
+    let candidate: NovelCandidate | null = null
+    for (let dh = -Math.min(dist, 6); dh <= Math.min(dist, 14); dh++) {
+      const remaining = dist - Math.abs(dh)
+      const daCandidates = remaining === 0 ? [0] : [-remaining, remaining]
+      for (const da of daCandidates) {
+        if (da < -6 || da > 14) continue
+
+        const h = Math.max(safeHome, projHome + dh)
+        const a = Math.max(safeAway, projAway + da)
+        if (h === a) continue // NBA games cannot end in a tie
+
+        if (!hasOccurred(h, a)) {
+          const actualDist = Math.abs(h - projHome) + Math.abs(a - projAway)
+          if (!candidate || actualDist < candidate.dist) {
+            candidate = { hi: Math.max(h, a), lo: Math.min(h, a), dist: actualDist }
+          }
+        }
+      }
+    }
+    if (candidate && candidate.dist <= dist) {
+      return candidate
+    }
+  }
+  return null
+}
+
 /**
  * Calculates NBA Scorigami probability, historical frequency, and target scores.
  * Fully isolated from prototype pollution, non-finite inputs, and redundant loop computations.
@@ -215,31 +258,11 @@ export function getScorigamiInfo(
     const minutesLeft = Math.max(0.1, safeSec / 60)
     const expAddPoints = Math.round(minutesLeft * 2.3)
 
-    // Find nearest novel score candidate in projected range
-    let bestNovelScore: { hi: number; lo: number; dist: number } | null = null
     const projHome = safeHome + expAddPoints
     const projAway = safeAway + expAddPoints
 
-    // Efficiently search surrounding score combinations with distance branch pruning
-    outer: for (let dh = -6; dh <= 14; dh++) {
-      const absDh = Math.abs(dh)
-      for (let da = -6; da <= 14; da++) {
-        if (bestNovelScore && (absDh + Math.abs(da)) >= bestNovelScore.dist) {
-          continue
-        }
-        const h = Math.max(safeHome, projHome + dh)
-        const a = Math.max(safeAway, projAway + da)
-        if (h === a) continue // NBA games cannot end in a tie
-
-        if (!hasOccurred(h, a)) {
-          const dist = Math.abs(h - projHome) + Math.abs(a - projAway)
-          if (!bestNovelScore || dist < bestNovelScore.dist) {
-            bestNovelScore = { hi: Math.max(h, a), lo: Math.min(h, a), dist }
-            if (dist <= 1) break outer // Cannot find closer candidate than Manhattan distance 1
-          }
-        }
-      }
-    }
+    // Efficiently search surrounding score combinations with distance early exit
+    const bestNovelScore = findNearestNovelScore(safeHome, safeAway, projHome, projAway)
 
     let noveltyPct = 0
     if (safeSec <= 120) {

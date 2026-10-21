@@ -689,37 +689,38 @@ const CREW_LABEL_CACHE = new Map<string, string>()
 export function formatCrewShortLabel(playByPlay?: unknown, colorAnalyst?: unknown): string {
   if (typeof playByPlay !== 'string' || !playByPlay.trim()) return ''
   const cleanPbp = playByPlay.trim()
-  const upperPbp = cleanPbp.toUpperCase()
-  if (upperPbp === 'TBA' || upperPbp === 'BROADCAST TEAM' || upperPbp === 'UNKNOWN') {
-    return 'TBA'
-  }
-
   const cleanColor = typeof colorAnalyst === 'string' ? colorAnalyst.trim() : ''
-  const upperColor = cleanColor.toUpperCase()
-  if (upperColor === 'TBA' || upperColor.includes('ASSIGNMENT TBA') || upperColor === 'COLOR COMMENTARY') {
-    const pbpParts = cleanPbp.split(' ')
-    return pbpParts[pbpParts.length - 1] || cleanPbp
-  }
 
-  const cacheKey = `${cleanPbp}::${cleanColor}`
+  const cacheKey = cleanColor ? `${cleanPbp}::${cleanColor}` : cleanPbp
   const cached = CREW_LABEL_CACHE.get(cacheKey)
   if (cached !== undefined) return cached
 
-  const pbpParts = cleanPbp.split(' ')
-  const pbpLast = pbpParts[pbpParts.length - 1] || cleanPbp
+  let label: string
 
-  if (!cleanColor) {
-    if (CREW_LABEL_CACHE.size > 200) CREW_LABEL_CACHE.clear()
-    CREW_LABEL_CACHE.set(cacheKey, pbpLast)
-    return pbpLast
+  const upperPbp = cleanPbp.toUpperCase()
+  if (upperPbp === 'TBA' || upperPbp === 'BROADCAST TEAM' || upperPbp === 'UNKNOWN') {
+    label = 'TBA'
+  } else {
+    const upperColor = cleanColor.toUpperCase()
+    if (upperColor === 'TBA' || upperColor.includes('ASSIGNMENT TBA') || upperColor === 'COLOR COMMENTARY') {
+      const pbpParts = cleanPbp.split(' ')
+      label = pbpParts[pbpParts.length - 1] || cleanPbp
+    } else {
+      const pbpParts = cleanPbp.split(' ')
+      const pbpLast = pbpParts[pbpParts.length - 1] || cleanPbp
+
+      if (!cleanColor) {
+        label = pbpLast
+      } else {
+        // Extract primary color analyst name before '&' or '/'
+        const primary = cleanColor.split('&')[0].split('/')[0].trim()
+        const analystParts = primary.split(' ')
+        const analystLast = analystParts[analystParts.length - 1] || primary
+        label = `${pbpLast} & ${analystLast}`
+      }
+    }
   }
 
-  // Extract primary color analyst name before '&' or '/'
-  const primary = cleanColor.split('&')[0].split('/')[0].trim()
-  const analystParts = primary.split(' ')
-  const analystLast = analystParts[analystParts.length - 1] || primary
-
-  const label = `${pbpLast} & ${analystLast}`
   if (CREW_LABEL_CACHE.size > 200) CREW_LABEL_CACHE.clear()
   CREW_LABEL_CACHE.set(cacheKey, label)
   return label

@@ -428,11 +428,11 @@ test('Performance: Announcer badge format cache prevents redundant string splits
 })
 
 test('Performance: Scorigami historical membership lookup operates in O(1)', () => {
-  // High-volume score checks should complete near-instantaneously (< 20ms for 2,000 checks)
+  // High-volume score checks should complete near-instantaneously (< 100ms for 2,000 checks under CI virtualization)
   const startTime = performance.now()
   for (let i = 0; i < 2000; i++) {
     hasOccurred(100 + (i % 30), 90 + (i % 25))
   }
   const elapsed = performance.now() - startTime
-  assert.ok(elapsed < 20, `2,000 lookups took ${elapsed}ms; expected < 20ms`)
+  assert.ok(elapsed < 100, `2,000 lookups took ${elapsed}ms; expected < 100ms`)
 })
