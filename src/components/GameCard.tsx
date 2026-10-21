@@ -11,16 +11,19 @@ import {
   sanitizeImageUrl,
 } from '../utils/nbaHelpers'
 import { formatCrewShortLabel } from '../utils/announcers'
+import { formatGameKickoff, type TimeZoneMode } from '../utils/timezone.ts'
 import { Tv, Sparkles, Maximize2, ShieldAlert } from 'lucide-react'
 
 interface GameCardProps {
   event: NBAEvent
   isSpotlighted?: boolean
   onSpotlight?: (id?: string, name?: string) => void
+  timeZoneMode?: TimeZoneMode
 }
 
 function areGameCardPropsEqual(prev: GameCardProps, next: GameCardProps): boolean {
   if (prev.isSpotlighted !== next.isSpotlighted) return false
+  if (prev.timeZoneMode !== next.timeZoneMode) return false
   if (prev.event === next.event) return true
 
   const pEv = prev.event
@@ -49,6 +52,7 @@ export const GameCard: React.FC<GameCardProps> = memo(({
   event,
   isSpotlighted = false,
   onSpotlight,
+  timeZoneMode,
 }) => {
   const competition = event.competitions[0]
   if (!competition) return null
@@ -56,6 +60,8 @@ export const GameCard: React.FC<GameCardProps> = memo(({
   const { status } = event
   const state = status.type?.state || 'in'
   const isLive = state === 'in'
+  const isFinal = state === 'post'
+  const isUpcoming = state === 'pre' || (!isLive && !isFinal)
   const situation = competition.situation
 
   const competitors = competition.competitors || []
@@ -113,13 +119,17 @@ export const GameCard: React.FC<GameCardProps> = memo(({
       <div className="flex items-center justify-between border-b border-white/[0.1] bg-black/40 px-3.5 py-2 text-xs">
         <div className="flex items-center gap-2">
           {isLive ? (
-            <span className="flex items-center gap-1.5 font-mono font-bold text-emerald-300">
+            <span className="flex items-center gap-1.5 font-mono font-bold text-emerald-300 text-xs sm:text-sm">
               <span className="h-2 w-2 rounded-full bg-emerald-400 animate-pulse" />
               Q{status.period} {status.displayClock}
             </span>
+          ) : isFinal ? (
+            <span className="font-mono text-slate-300 font-semibold text-xs sm:text-sm">
+              {status.type?.shortDetail || 'Final'}
+            </span>
           ) : (
-            <span className="font-mono text-slate-300 font-semibold text-[11px]">
-              {status.type?.detail || 'Scheduled'}
+            <span className="font-mono text-amber-300 font-semibold text-xs sm:text-[13px]">
+              {formatGameKickoff(event.date, timeZoneMode)}
             </span>
           )}
         </div>
@@ -127,7 +137,7 @@ export const GameCard: React.FC<GameCardProps> = memo(({
         <div className="flex items-center gap-2">
           {/* Clutch Alert */}
           {isClutch && (
-            <span className="inline-flex items-center gap-0.5 rounded bg-rose-600/40 border border-rose-500/60 px-1.5 py-0.5 text-[10px] font-black text-rose-200 animate-pulse">
+            <span className="inline-flex items-center gap-0.5 rounded bg-rose-600/40 border border-rose-500/60 px-1.5 py-0.5 text-xs font-black text-rose-200 animate-pulse">
               <ShieldAlert className="h-3 w-3 text-rose-300" />
               CLUTCH
             </span>
@@ -135,7 +145,7 @@ export const GameCard: React.FC<GameCardProps> = memo(({
 
           {/* Broadcast Network */}
           {crew?.network && (
-            <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-sky-200 bg-sky-500/15 border border-sky-400/30 px-1.5 py-0.5 rounded">
+            <span className="inline-flex items-center gap-1 text-xs font-semibold text-sky-200 bg-sky-500/15 border border-sky-400/30 px-1.5 py-0.5 rounded">
               <Tv className="h-3 w-3 text-sky-400" />
               {crew.network}
             </span>
@@ -148,7 +158,7 @@ export const GameCard: React.FC<GameCardProps> = memo(({
                 e.stopPropagation()
                 onSpotlight(event.id, event.name)
               }}
-              className="flex items-center gap-1 rounded bg-slate-800 hover:bg-orange-600 hover:text-white px-2 py-0.5 text-[10px] font-semibold text-slate-200 transition-colors border border-white/[0.1]"
+              className="flex items-center gap-1 rounded bg-slate-800 hover:bg-orange-600 hover:text-white px-2 py-0.5 text-xs font-semibold text-slate-200 transition-colors border border-white/[0.1]"
               title="Pin matchup to Spotlight Hero"
             >
               <Maximize2 className="h-3 w-3" />
@@ -162,55 +172,55 @@ export const GameCard: React.FC<GameCardProps> = memo(({
       <div className="p-3.5 space-y-2.5">
         {/* Away Team */}
         <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2.5">
+          <div className="flex items-center gap-2.5 min-w-0">
             <img
               src={sanitizeImageUrl(awayComp?.team?.logo)}
               alt={awayComp?.team?.displayName || 'Away'}
-              className="h-7 w-7 object-contain"
+              className="h-8 w-8 object-contain shrink-0"
               loading="lazy"
               decoding="async"
             />
-            <div>
-              <div className="flex items-center gap-1.5">
-                <span className="font-bold text-sm text-white">
+            <div className="min-w-0">
+              <div className="flex items-center gap-1.5 flex-wrap">
+                <span className="font-bold text-sm sm:text-base text-white truncate">
                   {awayComp?.team?.displayName || awayComp?.team?.name}
                 </span>
-                <span className="font-mono text-xs text-slate-400">
+                <span className="font-mono text-xs text-slate-400 font-semibold">
                   {awayComp?.team?.abbreviation}
                 </span>
               </div>
-              <span className="text-[11px] text-slate-400">{awayComp?.records?.[0]?.summary || '0-0'}</span>
+              <span className="text-xs text-slate-400">{awayComp?.records?.[0]?.summary || '0-0'}</span>
             </div>
           </div>
-          <span className="font-['Oswald'] text-2xl sm:text-3xl font-bold tracking-tight text-white tabular-nums">
-            {awayComp?.score ?? '-'}
+          <span className="font-['Oswald'] text-2xl sm:text-3xl font-bold tracking-tight text-white tabular-nums shrink-0 ml-2">
+            {isUpcoming ? '-' : (awayComp?.score ?? '-')}
           </span>
         </div>
 
         {/* Home Team */}
         <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2.5">
+          <div className="flex items-center gap-2.5 min-w-0">
             <img
               src={sanitizeImageUrl(homeComp?.team?.logo)}
               alt={homeComp?.team?.displayName || 'Home'}
-              className="h-7 w-7 object-contain"
+              className="h-8 w-8 object-contain shrink-0"
               loading="lazy"
               decoding="async"
             />
-            <div>
-              <div className="flex items-center gap-1.5">
-                <span className="font-bold text-sm text-white">
+            <div className="min-w-0">
+              <div className="flex items-center gap-1.5 flex-wrap">
+                <span className="font-bold text-sm sm:text-base text-white truncate">
                   {homeComp?.team?.displayName || homeComp?.team?.name}
                 </span>
-                <span className="font-mono text-xs text-slate-400">
+                <span className="font-mono text-xs text-slate-400 font-semibold">
                   {homeComp?.team?.abbreviation}
                 </span>
               </div>
-              <span className="text-[11px] text-slate-400">{homeComp?.records?.[0]?.summary || '0-0'}</span>
+              <span className="text-xs text-slate-400">{homeComp?.records?.[0]?.summary || '0-0'}</span>
             </div>
           </div>
-          <span className="font-['Oswald'] text-2xl sm:text-3xl font-bold tracking-tight text-white tabular-nums">
-            {homeComp?.score ?? '-'}
+          <span className="font-['Oswald'] text-2xl sm:text-3xl font-bold tracking-tight text-white tabular-nums shrink-0 ml-2">
+            {isUpcoming ? '-' : (homeComp?.score ?? '-')}
           </span>
         </div>
       </div>

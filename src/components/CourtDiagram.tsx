@@ -1,6 +1,7 @@
 import React, { useState, useId, memo, useMemo } from 'react'
 import type { NBACompetitor, NBAShot, NBASituation, NBAStatus } from '../types/nba'
 import { sanitizeHexColor } from '../utils/nbaHelpers'
+import { formatGameKickoff, type TimeZoneMode } from '../utils/timezone.ts'
 import { Flame, Clock, Crosshair, BarChart2, ShieldAlert } from 'lucide-react'
 
 interface CourtDiagramProps {
@@ -11,6 +12,8 @@ interface CourtDiagramProps {
   gameStatusDetail?: string
   isHero?: boolean
   status?: NBAStatus
+  timeZoneMode?: TimeZoneMode
+  eventDate?: string
 }
 
 export const CourtDiagram: React.FC<CourtDiagramProps> = memo(({
@@ -21,6 +24,8 @@ export const CourtDiagram: React.FC<CourtDiagramProps> = memo(({
   gameStatusDetail = 'In Progress',
   isHero = false,
   status,
+  timeZoneMode,
+  eventDate,
 }) => {
   const uniqueId = useId().replace(/:/g, '')
   const [selectedShot, setSelectedShot] = useState<NBAShot | null>(null)
@@ -97,13 +102,20 @@ export const CourtDiagram: React.FC<CourtDiagramProps> = memo(({
                     : '#f97316',
               }}
             />
-            <span className="font-mono text-xs font-bold text-white tracking-wide">
-              {situation?.possessionText || (gameState === 'in' ? 'Live Play' : currentPeriodDetail)}
+            <span className="font-mono text-xs sm:text-sm font-bold text-white tracking-wide">
+              {situation?.possessionText ||
+                (gameState === 'in'
+                  ? 'Live Play'
+                  : gameState === 'post'
+                  ? 'Final Shot Chart'
+                  : eventDate
+                  ? `Tip-Off: ${formatGameKickoff(eventDate, timeZoneMode)}`
+                  : currentPeriodDetail)}
             </span>
           </div>
 
           {scoringRun && (
-            <span className="inline-flex items-center gap-1 rounded bg-orange-600/35 border border-orange-500/60 px-2 py-0.5 text-[10px] sm:text-[11px] font-bold text-orange-100 animate-pulse">
+            <span className="inline-flex items-center gap-1 rounded bg-orange-600/35 border border-orange-500/60 px-2 py-0.5 text-xs font-bold text-orange-100 animate-pulse">
               <Flame className="h-3 w-3 text-orange-400 fill-orange-400 shrink-0" />
               <span>
                 {scoringRun.teamAbbr} {scoringRun.points}-{scoringRun.opponentPoints} Run
@@ -113,7 +125,7 @@ export const CourtDiagram: React.FC<CourtDiagramProps> = memo(({
           )}
 
           {isClutch && (
-            <span className="inline-flex items-center gap-1 rounded bg-rose-600/40 border border-rose-500/60 px-2 py-0.5 text-[10px] sm:text-[11px] font-extrabold text-rose-100 animate-pulse">
+            <span className="inline-flex items-center gap-1 rounded bg-rose-600/40 border border-rose-500/60 px-2 py-0.5 text-xs font-extrabold text-rose-100 animate-pulse">
               <ShieldAlert className="h-3 w-3 text-rose-300 shrink-0" />
               <span>CLUTCH (≤5 PTS)</span>
             </span>
@@ -121,12 +133,12 @@ export const CourtDiagram: React.FC<CourtDiagramProps> = memo(({
         </div>
 
         {/* Right: Shot Clock & Bonus Indicators */}
-        <div className="flex items-center gap-2 sm:gap-3 font-mono text-xs shrink-0">
+        <div className="flex items-center gap-2 sm:gap-3 font-mono text-xs sm:text-sm shrink-0">
           {/* Shot Clock */}
           {gameState === 'in' && (
             <div className="flex items-center gap-1.5 bg-black/70 border border-white/[0.15] px-2.5 py-1 rounded-md">
               <Clock className="h-3 w-3 text-slate-300" />
-              <span className="text-slate-300 text-[10px] uppercase tracking-wider font-semibold">Shot Clock:</span>
+              <span className="text-slate-300 text-xs uppercase tracking-wider font-semibold">Shot Clock:</span>
               <span
                 className={`font-extrabold tabular-nums ${
                   shotClock <= 5 ? 'text-rose-400 animate-pulse' : 'text-amber-300'
@@ -138,7 +150,7 @@ export const CourtDiagram: React.FC<CourtDiagramProps> = memo(({
           )}
 
           {/* Team Fouls & Bonus */}
-          <div className="hidden sm:flex items-center gap-2 text-[11px]">
+          <div className="hidden sm:flex items-center gap-2 text-xs">
             <span className="text-slate-300">
               {awayAbbr} Fouls: <strong className="text-white">{awayFouls}</strong>
               {awayFouls >= 5 && <span className="ml-1 text-rose-400 font-bold">(BONUS)</span>}

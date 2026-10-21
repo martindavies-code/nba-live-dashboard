@@ -6,6 +6,14 @@ import { GameCard } from './GameCard'
 import { fetchNBAScoreboard } from '../services/espnApi'
 import { isClutchGame, safeStorage } from '../utils/nbaHelpers'
 import {
+  getSavedTimeZone,
+  setSavedTimeZone,
+  getTimeZoneAbbr,
+  getNBASlateDate,
+  TIMEZONE_OPTIONS,
+  type TimeZoneMode,
+} from '../utils/timezone.ts'
+import {
   playWhistleSound,
   playTactileClick,
 } from '../utils/audioFeedback'
@@ -120,7 +128,8 @@ export const Dashboard: React.FC = () => {
   const [filter, setFilter] = useState<GameFilter>('all')
   const [searchQuery, setSearchQuery] = useState<string>('')
   const [selectedHeroId, setSelectedHeroId] = useState<string | null>(null)
-  const [selectedDate, setSelectedDate] = useState<string>(() => new Date().toISOString().slice(0, 10))
+  const [timeZoneMode, setTimeZoneMode] = useState<TimeZoneMode>(getSavedTimeZone)
+  const [selectedDate, setSelectedDate] = useState<string>(() => getNBASlateDate())
   const [isOnline, setIsOnline] = useState<boolean>(typeof navigator !== 'undefined' ? navigator.onLine : true)
 
   const [isMuted, setIsMuted] = useState<boolean>(() => {
@@ -129,6 +138,19 @@ export const Dashboard: React.FC = () => {
 
   const [isShortcutsOpen, setIsShortcutsOpen] = useState<boolean>(false)
   const [srAnnouncement, setSrAnnouncement] = useState<string>('')
+
+  const activeTzOption = useMemo(() => {
+    return TIMEZONE_OPTIONS.find((o) => o.id === timeZoneMode) || TIMEZONE_OPTIONS[0]
+  }, [timeZoneMode])
+
+  const handleCycleTimeZone = useCallback(() => {
+    const currentIndex = TIMEZONE_OPTIONS.findIndex((o) => o.id === timeZoneMode)
+    const nextIndex = (currentIndex + 1) % TIMEZONE_OPTIONS.length
+    const nextMode = TIMEZONE_OPTIONS[nextIndex].id
+    setTimeZoneMode(nextMode)
+    setSavedTimeZone(nextMode)
+    setSrAnnouncement(`Timezone changed to ${TIMEZONE_OPTIONS[nextIndex].label}`)
+  }, [timeZoneMode])
 
   const selectedDateRef = useRef(selectedDate)
   const isMutedRef = useRef(isMuted)
@@ -365,15 +387,11 @@ export const Dashboard: React.FC = () => {
             </div>
             <div>
               <div className="flex items-center gap-2">
-                <h1 className="font-['Oswald'] text-lg sm:text-2xl font-bold tracking-wide uppercase text-white leading-tight">
+                <h1 className="font-['Oswald'] text-xl sm:text-2xl font-bold tracking-wide uppercase text-white leading-tight">
                   NBA Live Command
                 </h1>
-                <span className="inline-flex items-center gap-1 rounded-full bg-emerald-500/20 border border-emerald-400/40 px-2 py-0.5 text-[9px] sm:text-[10px] font-bold text-emerald-300 shrink-0">
-                  <span className="h-1.5 w-1.5 rounded-full bg-emerald-400 animate-ping" />
-                  LIVE FEED
-                </span>
               </div>
-              <p className="text-[11px] text-slate-300 font-medium hidden md:block">
+              <p className="text-xs sm:text-[13px] text-slate-300 font-medium hidden md:block">
                 Real-Time Scores, Dynamic Win Probability & Broadcast Crews
               </p>
             </div>
@@ -388,8 +406,22 @@ export const Dashboard: React.FC = () => {
             />
           </div>
 
-          {/* Right Controls: Auto-Poll Ticker, Audio, Shortcuts */}
+          {/* Right Controls: Timezone, Auto-Poll Ticker, Audio, Shortcuts */}
           <div className="order-2 lg:order-3 flex items-center gap-1.5 sm:gap-2 ml-auto lg:ml-0">
+            {/* Timezone Selector Pill */}
+            <button
+              onClick={handleCycleTimeZone}
+              className="flex items-center gap-1.5 rounded-lg border border-white/[0.15] bg-white/[0.06] hover:bg-white/[0.12] hover:border-amber-400/50 px-2 sm:px-2.5 py-1 text-xs font-semibold text-slate-200 transition-colors shadow-sm"
+              title={`Active Timezone: ${activeTzOption.label}. Click to switch between London UK, US Eastern, and Local.`}
+              aria-label={`Timezone: ${activeTzOption.label}. Click to cycle.`}
+            >
+              <span className="text-sm">{activeTzOption.flag}</span>
+              <span className="font-medium text-slate-200 hidden sm:inline">{activeTzOption.shortLabel}</span>
+              <span className="font-mono text-amber-300 font-bold text-xs">
+                ({getTimeZoneAbbr(new Date(), timeZoneMode)})
+              </span>
+            </button>
+
             {/* Auto-poll Countdown Pill */}
             <AutoRefreshTicker
               isPaused={isTickerPaused}
@@ -458,7 +490,7 @@ export const Dashboard: React.FC = () => {
                   setFilter(tab.id as GameFilter)
                   setSrAnnouncement(`Filter changed to ${tab.label}`)
                 }}
-                className={`flex items-center gap-1.5 px-3 py-1 rounded-lg font-semibold transition-colors shrink-0 text-xs ${
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg font-semibold transition-colors shrink-0 text-xs sm:text-sm ${
                   filter === tab.id
                     ? 'bg-orange-500 text-white shadow-sm shadow-orange-950 font-bold'
                     : 'text-slate-300 hover:text-white hover:bg-white/[0.08] border border-transparent'
@@ -466,7 +498,7 @@ export const Dashboard: React.FC = () => {
               >
                 <span>{tab.label}</span>
                 <span
-                  className={`font-mono text-[10px] rounded-full px-1.5 py-0.2 ${
+                  className={`font-mono text-xs rounded-full px-2 py-0.5 ${
                     filter === tab.id ? 'bg-black/30 text-white font-bold' : 'bg-white/[0.1] text-slate-200'
                   }`}
                 >
@@ -501,7 +533,7 @@ export const Dashboard: React.FC = () => {
           <>
             {/* Spotlight Hero Matchup */}
             {heroEvent ? (
-              <HeroMatchup event={heroEvent} onSelectGame={setSelectedHeroId} />
+              <HeroMatchup event={heroEvent} onSelectGame={setSelectedHeroId} timeZoneMode={timeZoneMode} />
             ) : (
               <div className="rounded-2xl border border-white/[0.08] bg-[#090f1d] p-12 text-center text-slate-400">
                 No matchups found matching the active filter.
@@ -511,10 +543,10 @@ export const Dashboard: React.FC = () => {
             {/* Scoreboard Grid Section */}
             <section className="space-y-4">
               <div className="flex flex-col sm:flex-row sm:items-baseline sm:justify-between border-b border-white/[0.08] pb-2 gap-1">
-                <h2 className="font-['Oswald'] text-lg font-bold uppercase tracking-wider text-white">
+                <h2 className="font-['Oswald'] text-lg sm:text-xl font-bold uppercase tracking-wider text-white">
                   All Matchups ({filteredEvents.length})
                 </h2>
-                <span className="text-[11px] sm:text-xs text-slate-400 font-mono">
+                <span className="text-xs sm:text-sm text-slate-400 font-mono">
                   Click any matchup to spotlight on the court radar
                 </span>
               </div>
@@ -527,6 +559,7 @@ export const Dashboard: React.FC = () => {
                       event={ev}
                       isSpotlighted={ev.id === heroEvent?.id}
                       onSpotlight={handleSpotlight}
+                      timeZoneMode={timeZoneMode}
                     />
                   ))}
                 </div>
