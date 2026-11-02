@@ -59,11 +59,14 @@ export function setSavedTimeZone(tz: TimeZoneMode): void {
 export function resolveTimeZone(mode: TimeZoneMode = 'Europe/London'): string {
   if (mode === 'Europe/London') return 'Europe/London'
   if (mode === 'America/New_York') return 'America/New_York'
-  try {
-    return Intl.DateTimeFormat().resolvedOptions().timeZone || 'Europe/London'
-  } catch {
-    return 'Europe/London'
+  if (mode === 'auto') {
+    try {
+      return Intl.DateTimeFormat().resolvedOptions().timeZone || 'Europe/London'
+    } catch {
+      return 'Europe/London'
+    }
   }
+  return 'Europe/London'
 }
 
 /**
