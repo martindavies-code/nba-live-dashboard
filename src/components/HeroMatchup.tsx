@@ -10,6 +10,7 @@ import {
   calculateWinProbability,
   resolveHomeSpread,
   sanitizeImageUrl,
+  areEventsEqual,
 } from '../utils/nbaHelpers'
 import { formatGameKickoff, type TimeZoneMode } from '../utils/timezone.ts'
 import {
@@ -32,28 +33,7 @@ interface HeroMatchupProps {
 
 function areHeroPropsEqual(prev: HeroMatchupProps, next: HeroMatchupProps): boolean {
   if (prev.timeZoneMode !== next.timeZoneMode) return false
-  if (prev.event === next.event) return true
-  const p = prev.event
-  const n = next.event
-  if (p.id !== n.id) return false
-  if (p.status?.clock !== n.status?.clock) return false
-  if (p.status?.period !== n.status?.period) return false
-  if (p.status?.displayClock !== n.status?.displayClock) return false
-  if (p.status?.type?.detail !== n.status?.type?.detail) return false
-  if (p.status?.type?.state !== n.status?.type?.state) return false
-
-  const pComp = p.competitions?.[0]
-  const nComp = n.competitions?.[0]
-  if (pComp?.situation?.possession !== nComp?.situation?.possession) return false
-  if (pComp?.situation?.shotClock !== nComp?.situation?.shotClock) return false
-
-  const pComps = pComp?.competitors
-  const nComps = nComp?.competitors
-  if ((pComps?.[0]?.score ?? '') !== (nComps?.[0]?.score ?? '')) return false
-  if ((pComps?.[1]?.score ?? '') !== (nComps?.[1]?.score ?? '')) return false
-  if ((pComp?.shots?.length ?? 0) !== (nComp?.shots?.length ?? 0)) return false
-
-  return true
+  return areEventsEqual(prev.event, next.event)
 }
 
 export const HeroMatchup: React.FC<HeroMatchupProps> = memo(({ event, timeZoneMode }) => {

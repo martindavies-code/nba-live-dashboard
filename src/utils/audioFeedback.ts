@@ -183,7 +183,28 @@ export function playTactileClick(): void {
       } catch {}
     }
 
-    osc.start(now)
-    osc.stop(now + 0.05)
+    try {
+      osc.start(now)
+      osc.stop(now + 0.05)
+    } catch {
+      try {
+        osc.disconnect()
+        gain.disconnect()
+      } catch {}
+    }
   } catch {}
 }
+
+/**
+ * Safely closes and resets the active AudioContext instance.
+ * Useful for test teardowns, memory reclamation, and background tab suspension.
+ */
+export function resetAudioContext(): void {
+  try {
+    if (audioCtx && audioCtx.state !== 'closed') {
+      audioCtx.close().catch(() => {})
+    }
+  } catch {}
+  audioCtx = null
+}
+

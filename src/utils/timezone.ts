@@ -201,3 +201,27 @@ export function getNBASlateDate(date: Date = new Date()): string {
     return date.toISOString().slice(0, 10)
   }
 }
+
+/**
+ * Deterministically shifts a YYYY-MM-DD calendar date by a given number of days.
+ * Resilient against non-finite delta values, invalid date strings, and leap year boundaries.
+ * Uses UTC date calculations to prevent daylight saving time shifts from skipping days.
+ */
+export function shiftCalendarDate(dateStr?: string, deltaDays = 0): string {
+  const safeDelta = Number.isFinite(deltaDays) ? Math.trunc(deltaDays) : 0
+  let current: Date
+  if (typeof dateStr === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(dateStr.trim())) {
+    const parts = dateStr.trim().split('-')
+    const y = parseInt(parts[0], 10)
+    const m = parseInt(parts[1], 10) - 1
+    const d = parseInt(parts[2], 10)
+    current = new Date(Date.UTC(y, m, d))
+  } else {
+    current = new Date()
+  }
+
+  current.setUTCDate(current.getUTCDate() + safeDelta)
+  return current.toISOString().slice(0, 10)
+}
+
+

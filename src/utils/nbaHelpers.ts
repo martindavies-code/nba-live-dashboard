@@ -1,4 +1,4 @@
-import type { NBACompetitor, NBAStatus, NBAOdds } from '../types/nba'
+import type { NBACompetitor, NBAStatus, NBAOdds, NBAEvent, NBAScoreboardData } from '../types/nba'
 
 /**
  * Sanitizes a hex color string against CSS injection and format violations.
@@ -397,3 +397,56 @@ export const safeStorage = {
     return MEMORY_STORAGE.delete(key)
   },
 }
+
+/**
+ * Fast structural comparison between two NBA events to check if scores, clocks,
+ * game state, shot clock, possession, or shot count have changed.
+ */
+export function areEventsEqual(
+  p: NBAEvent | null | undefined,
+  n: NBAEvent | null | undefined
+): boolean {
+  if (p === n) return true
+  if (!p || !n) return false
+  if (p.id !== n.id) return false
+  if (p.status?.clock !== n.status?.clock) return false
+  if (p.status?.period !== n.status?.period) return false
+  if (p.status?.displayClock !== n.status?.displayClock) return false
+  if (p.status?.type?.detail !== n.status?.type?.detail) return false
+  if (p.status?.type?.state !== n.status?.type?.state) return false
+
+  const pComp = p.competitions?.[0]
+  const nComp = n.competitions?.[0]
+  if (pComp?.situation?.possession !== nComp?.situation?.possession) return false
+  if (pComp?.situation?.shotClock !== nComp?.situation?.shotClock) return false
+
+  const pComps = pComp?.competitors
+  const nComps = nComp?.competitors
+  if ((pComps?.[0]?.score ?? '') !== (nComps?.[0]?.score ?? '')) return false
+  if ((pComps?.[1]?.score ?? '') !== (nComps?.[1]?.score ?? '')) return false
+  if ((pComp?.shots?.length ?? 0) !== (nComp?.shots?.length ?? 0)) return false
+
+  return true
+}
+
+/**
+ * Fast structural equality comparison between two scoreboard data payloads
+ * to avoid triggering React reconciliation cycles when polling returns identical states.
+ */
+export function areScoreboardsEqual(
+  prev: NBAScoreboardData | null | undefined,
+  next: NBAScoreboardData | null | undefined
+): boolean {
+  if (prev === next) return true
+  if (!prev || !next) return false
+  if (prev.events.length !== next.events.length) return false
+
+  for (let i = 0; i < prev.events.length; i++) {
+    if (!areEventsEqual(prev.events[i], next.events[i])) {
+      return false
+    }
+  }
+
+  return true
+}
+

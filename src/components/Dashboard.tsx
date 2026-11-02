@@ -1,15 +1,17 @@
-import React, { useState, useEffect, useCallback, useRef, useMemo, memo } from 'react'
+import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import type { GameFilter, NBAScoreboardData } from '../types/nba'
 import { DateSelector } from './DateSelector'
 import { HeroMatchup } from './HeroMatchup'
 import { GameCard } from './GameCard'
+import { AutoRefreshTicker } from './AutoRefreshTicker'
 import { fetchNBAScoreboard } from '../services/espnApi'
-import { isClutchGame, safeStorage } from '../utils/nbaHelpers'
+import { isClutchGame, safeStorage, areScoreboardsEqual } from '../utils/nbaHelpers'
 import {
   getSavedTimeZone,
   setSavedTimeZone,
   getTimeZoneAbbr,
   getNBASlateDate,
+  shiftCalendarDate,
   TIMEZONE_OPTIONS,
   type TimeZoneMode,
 } from '../utils/timezone.ts'
@@ -17,6 +19,7 @@ import {
   playWhistleSound,
   playTactileClick,
 } from '../utils/audioFeedback'
+import { useKeyboardShortcuts } from '../utils/useKeyboardShortcuts'
 const KeyboardShortcutsModal = React.lazy(() =>
   import('./KeyboardShortcutsModal').then((m) => ({ default: m.KeyboardShortcutsModal }))
 )
@@ -29,96 +32,6 @@ import {
   Keyboard,
   AlertCircle,
 } from 'lucide-react'
-
-/**
- * Isolated Auto-Refresh Ticker component.
- * Manages its own 1-second interval to avoid re-rendering the whole dashboard every second.
- */
-interface AutoRefreshTickerProps {
-  isPaused: boolean
-  isRefreshing: boolean
-  onRefreshTrigger: () => void
-}
-
-const AutoRefreshTicker: React.FC<AutoRefreshTickerProps> = memo(({
-  isPaused,
-  isRefreshing,
-  onRefreshTrigger,
-}) => {
-  const [secondsLeft, setSecondsLeft] = useState<number>(10)
-  const [prevIsRefreshing, setPrevIsRefreshing] = useState<boolean>(isRefreshing)
-  const triggerRef = useRef(onRefreshTrigger)
-
-  if (isRefreshing !== prevIsRefreshing) {
-    setPrevIsRefreshing(isRefreshing)
-    if (isRefreshing) {
-      setSecondsLeft(10)
-    }
-  }
-
-  useEffect(() => {
-    triggerRef.current = onRefreshTrigger
-  }, [onRefreshTrigger])
-
-  useEffect(() => {
-    if (isPaused) return
-
-    const interval = setInterval(() => {
-      setSecondsLeft((prev) => {
-        if (prev <= 1) {
-          triggerRef.current()
-          return 10
-        }
-        return prev - 1
-      })
-    }, 1000)
-
-    return () => clearInterval(interval)
-  }, [isPaused])
-
-  return (
-    <div
-      className="flex items-center gap-1.5 rounded-lg border border-white/[0.08] bg-black/40 px-2.5 py-1 text-xs font-mono text-slate-300"
-      title="Next auto-refresh in seconds"
-    >
-      <RefreshCw className={`h-3 w-3 text-orange-400 ${isRefreshing ? 'animate-spin' : ''}`} />
-      <span className="tabular-nums font-bold">{secondsLeft}s</span>
-    </div>
-  )
-})
-
-/**
- * Fast structural equality comparison to avoid triggering React reconciliation cycles
- * when polling returns identical live game states, scores, and clocks.
- */
-function areScoreboardsEqual(prev: NBAScoreboardData | null, next: NBAScoreboardData | null): boolean {
-  if (prev === next) return true
-  if (!prev || !next) return false
-  if (prev.events.length !== next.events.length) return false
-
-  for (let i = 0; i < prev.events.length; i++) {
-    const p = prev.events[i]
-    const n = next.events[i]
-    if (p.id !== n.id) return false
-    if (p.status?.clock !== n.status?.clock) return false
-    if (p.status?.period !== n.status?.period) return false
-    if (p.status?.displayClock !== n.status?.displayClock) return false
-    if (p.status?.type?.detail !== n.status?.type?.detail) return false
-    if (p.status?.type?.state !== n.status?.type?.state) return false
-
-    const pComp = p.competitions?.[0]
-    const nComp = n.competitions?.[0]
-    if (pComp?.situation?.possession !== nComp?.situation?.possession) return false
-    if (pComp?.situation?.shotClock !== nComp?.situation?.shotClock) return false
-
-    const pComps = pComp?.competitors
-    const nComps = nComp?.competitors
-    if ((pComps?.[0]?.score ?? '') !== (nComps?.[0]?.score ?? '')) return false
-    if ((pComps?.[1]?.score ?? '') !== (nComps?.[1]?.score ?? '')) return false
-  }
-
-  return true
-}
 
 export const Dashboard: React.FC = () => {
   const [data, setData] = useState<NBAScoreboardData | null>(null)
@@ -228,47 +141,29 @@ export const Dashboard: React.FC = () => {
   // Handle Quick Date Select (delta days) with NaN guard and timezone stability
   const handleQuickDateSelect = useCallback((deltaDays: number) => {
     setSelectedDate((prevDate) => {
-      let current = new Date(prevDate)
-      if (isNaN(current.getTime())) {
-        current = new Date()
-      }
-      current.setDate(current.getDate() + deltaDays)
-      const nextStr = current.toISOString().slice(0, 10)
+      const nextStr = shiftCalendarDate(prevDate, deltaDays)
       setSrAnnouncement(`Navigated to date ${nextStr}`)
       return nextStr
     })
   }, [])
 
-  // Keyboard Shortcuts Handler - uses stable refs so registered once on mount
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (['INPUT', 'TEXTAREA'].includes((e.target as HTMLElement)?.tagName)) return
-
-      if (e.key === '?' || (e.key === '/' && e.shiftKey)) {
-        e.preventDefault()
-        setIsShortcutsOpen((prev) => !prev)
-      } else if (e.key.toLowerCase() === 'm') {
-        e.preventDefault()
-        setIsMuted((prev) => {
-          const next = !prev
-          safeStorage.setItem('nba_muted', String(next))
-          setSrAnnouncement(next ? 'Sound cues muted' : 'Sound cues active')
-          return next
-        })
-      } else if (e.key === ' ' || e.code === 'Space') {
-        e.preventDefault()
-        if (!isMutedRef.current) playTactileClick()
-        loadDataRef.current?.(true)
-      } else if (e.key === '1') setFilter('all')
-      else if (e.key === '2') setFilter('live')
-      else if (e.key === '3') setFilter('clutch')
-      else if (e.key === '4') setFilter('upcoming')
-      else if (e.key === '5') setFilter('final')
-    }
-
-    window.addEventListener('keydown', handleKeyDown)
-    return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [])
+  // Keyboard Shortcuts Handler - decoupled hook with automatic unmount cleanup
+  useKeyboardShortcuts({
+    onToggleShortcuts: () => setIsShortcutsOpen((prev) => !prev),
+    onToggleMute: () => {
+      setIsMuted((prev) => {
+        const next = !prev
+        safeStorage.setItem('nba_muted', String(next))
+        setSrAnnouncement(next ? 'Sound cues muted' : 'Sound cues active')
+        return next
+      })
+    },
+    onRefresh: () => {
+      if (!isMutedRef.current) playTactileClick()
+      loadDataRef.current?.(true)
+    },
+    onSelectFilter: (newFilter) => setFilter(newFilter),
+  })
 
   // Filtered Events with memoization
   const events = useMemo(() => data?.events || [], [data?.events])

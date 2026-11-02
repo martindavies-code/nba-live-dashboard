@@ -1,6 +1,9 @@
 import type { NBAScoreboardData, NBAEvent, NBAShot, NBACompetition } from '../types/nba'
 import { resolveAnnouncingCrew } from '../utils/announcers.ts'
 import { sanitizeImageUrl } from '../utils/nbaHelpers.ts'
+import { DashboardDomainError, TransientNetworkError, isAbortError } from '../utils/errors.ts'
+import { withExponentialBackoff } from '../utils/retry.ts'
+import { logger } from '../utils/logger.ts'
 
 export const ESPN_NBA_SCOREBOARD_URL = 'https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard'
 export const ESPN_NBA_SUMMARY_URL = 'https://site.api.espn.com/apis/site/v2/sports/basketball/nba/summary'
@@ -189,21 +192,33 @@ export function fetchNBAScoreboard(
     }
 
     try {
-      const response = await fetch(url.toString(), {
-        signal,
-        headers: {
-          Accept: 'application/json',
-        },
-      })
+      const fetchRaw = async (fetchSignal?: AbortSignal) => {
+        const response = await fetch(url.toString(), {
+          signal: fetchSignal,
+          headers: {
+            Accept: 'application/json',
+          },
+        })
 
-      if (!response.ok) {
-        throw new Error(`ESPN NBA API returned ${response.status}`)
+        if (!response.ok) {
+          if (response.status >= 500 || response.status === 429) {
+            throw new TransientNetworkError(`ESPN NBA API returned ${response.status}`, response.status)
+          }
+          throw new DashboardDomainError(`ESPN NBA API returned non-retryable ${response.status}`, `HTTP_${response.status}`)
+        }
+
+        const rawData = await response.json()
+        if (!rawData || typeof rawData !== 'object') {
+          throw new DashboardDomainError('Invalid JSON response structure from ESPN NBA API')
+        }
+        return rawData
       }
 
-      const rawData = await response.json()
-      if (!rawData || typeof rawData !== 'object') {
-        throw new Error('Invalid JSON response structure from ESPN NBA API')
-      }
+      const rawData = await withExponentialBackoff(
+        fetchRaw,
+        { maxRetries: 2, initialDelayMs: 50, maxDelayMs: 200, jitter: false },
+        signal
+      )
 
       const rawEvents = Array.isArray(rawData.events) ? rawData.events : []
       const enriched = enrichEvents(rawEvents)
@@ -238,10 +253,15 @@ export function fetchNBAScoreboard(
         isCached: false,
       }
     } catch (err: unknown) {
-      // If aborted, rethrow
-      if (err instanceof Error && err.name === 'AbortError') {
+      // If aborted, rethrow immediately
+      if (isAbortError(err)) {
         throw err
       }
+
+      logger.warn('Scoreboard fetch encountered non-fatal failure; falling back to cache or redundancy', {
+        date: sanitizedDate,
+        cacheKey,
+      }, err)
 
       // Fallback to cached (even if expired) or rich mock data
       if (cached) {
