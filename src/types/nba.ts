@@ -16,17 +16,30 @@ export interface NBALineScore {
   period?: number
 }
 
+export interface NBACompetitorRecord {
+  name?: string
+  abbreviation?: string
+  type?: string
+  summary: string
+}
+
+export interface NBACompetitorStat {
+  name: string
+  abbreviation?: string
+  displayValue: string
+  rankDisplayValue?: string
+  label?: string
+}
+
 export interface NBACompetitor {
   id: string
   uid?: string
   homeAway: 'home' | 'away'
   winner?: boolean
   score: string
-  records?: Array<{
-    name?: string
-    type?: string
-    summary: string
-  }>
+  records?: NBACompetitorRecord[]
+  statistics?: NBACompetitorStat[]
+  leaders?: NBALeader[]
   team: NBATeam
   linescores?: NBALineScore[]
   fouls?: number
@@ -152,21 +165,115 @@ export interface NBAOdds {
 export interface NBALeader {
   name: string
   displayName: string
-  shortDisplayName: string
-  abbreviation: string
+  shortDisplayName?: string
+  abbreviation?: string
   leaders: Array<{
     displayValue: string
     value: number
+    summary?: string
+    mainStat?: { value: string; label: string }
     athlete: {
       id: string
       fullName: string
       displayName: string
       shortName: string
-      headshot?: { href: string }
+      headshot?: string | { href: string; alt?: string }
+      jersey?: string
       position?: { abbreviation: string }
-      team: { id: string; abbreviation: string }
+      team?: { id: string; abbreviation?: string }
     }
   }>
+}
+
+export interface NBAPlayerBoxLine {
+  id: string
+  name: string
+  shortName: string
+  jersey?: string
+  position?: string
+  headshot?: string
+  starter?: boolean
+  min: string
+  pts: number
+  reb: number
+  ast: number
+  fg: string
+  threePt: string
+  ft: string
+  stl: number
+  blk: number
+  tov: number
+  plusMinus: string
+}
+
+export interface NBAInjuryItem {
+  playerName: string
+  position?: string
+  status: string
+  detail?: string
+}
+
+export interface NBALastGameItem {
+  result: 'W' | 'L'
+  score: string
+  opponentAbbr: string
+  homeAway?: string
+}
+
+export interface NBATeamSummaryStats {
+  streak?: string
+  lastTen?: string
+  avgPoints?: string
+  avgPointsAgainst?: string
+  fieldGoalPct?: string
+  threePointPct?: string
+  freeThrowPct?: string
+  avgRebounds?: string
+  avgAssists?: string
+  avgSteals?: string
+  avgBlocks?: string
+  avgTurnovers?: string
+  fgMadeAttempted?: string
+  threePtMadeAttempted?: string
+  ftMadeAttempted?: string
+  totalRebounds?: string
+  offensiveRebounds?: string
+  defensiveRebounds?: string
+  assists?: string
+  steals?: string
+  blocks?: string
+  turnovers?: string
+  pointsInPaint?: string
+  fastBreakPoints?: string
+  turnoverPoints?: string
+  largestLead?: string
+  leadChanges?: string
+  leadPercentage?: string
+}
+
+export interface NBATeamSummary {
+  teamId: string
+  abbreviation: string
+  homeAway: 'home' | 'away'
+  leaders: NBALeader[]
+  stats: NBATeamSummaryStats
+  topPlayers: NBAPlayerBoxLine[]
+  injuries: NBAInjuryItem[]
+  lastFiveGames: NBALastGameItem[]
+}
+
+export interface NBAGameSummary {
+  eventId: string
+  awayTeam: NBATeamSummary | null
+  homeTeam: NBATeamSummary | null
+  shots: NBAShot[]
+  predictor?: {
+    homeWinPct: number
+    awayWinPct: number
+  }
+  seasonSeries?: string
+  attendance?: number
+  officials?: string[]
 }
 
 export interface NBACompetition {

@@ -1,4 +1,16 @@
-import type { NBAScoreboardData, NBAEvent, NBAShot, NBACompetition } from '../types/nba'
+import type {
+  NBAScoreboardData,
+  NBAEvent,
+  NBAShot,
+  NBACompetition,
+  NBALeader,
+  NBAGameSummary,
+  NBATeamSummary,
+  NBATeamSummaryStats,
+  NBAPlayerBoxLine,
+  NBAInjuryItem,
+  NBALastGameItem,
+} from '../types/nba'
 import { resolveAnnouncingCrew } from '../utils/announcers.ts'
 import { sanitizeImageUrl } from '../utils/nbaHelpers.ts'
 import { DashboardDomainError, TransientNetworkError, isAbortError } from '../utils/errors.ts'
@@ -27,6 +39,16 @@ interface CacheEntry {
 const SCOREBOARD_CACHE = new Map<string, CacheEntry>()
 const MAX_CACHE_ENTRIES = 15
 const IN_FLIGHT_REQUESTS = new Map<string, Promise<FetchNBAScoreboardResult>>()
+
+interface SummaryCacheEntry {
+  data: NBAGameSummary
+  gameState: string
+  expiresAt: number
+}
+
+const SUMMARY_CACHE = new Map<string, SummaryCacheEntry>()
+const MAX_SUMMARY_CACHE_ENTRIES = 20
+const IN_FLIGHT_SUMMARY_REQUESTS = new Map<string, Promise<NBAGameSummary | null>>()
 
 /**
  * Validates and sanitizes date parameter into strictly valid YYYYMMDD format.
@@ -80,6 +102,56 @@ export function clearScoreboardCache(): void {
 }
 
 /**
+ * Clears the game summary cache (used for cache invalidation & tests).
+ */
+export function clearSummaryCache(): void {
+  SUMMARY_CACHE.clear()
+  IN_FLIGHT_SUMMARY_REQUESTS.clear()
+}
+
+const MISSING_HEADSHOT_SENTINEL = 'https://invalid.local/__missing__'
+
+function sanitizeOptionalHeadshotUrl(url: unknown): string {
+  if (typeof url !== 'string' || !url.trim()) return ''
+  const sanitized = sanitizeImageUrl(url, MISSING_HEADSHOT_SENTINEL)
+  return sanitized === MISSING_HEADSHOT_SENTINEL ? '' : sanitized
+}
+
+function sanitizeLeaderHeadshot(headshot: unknown): string | { href: string; alt?: string } | undefined {
+  if (typeof headshot === 'string') {
+    const safe = sanitizeOptionalHeadshotUrl(headshot)
+    return safe || undefined
+  }
+  if (headshot && typeof headshot === 'object' && 'href' in headshot) {
+    const obj = headshot as { href?: unknown; alt?: unknown }
+    const safe = sanitizeOptionalHeadshotUrl(obj.href)
+    if (!safe) return undefined
+    return {
+      href: safe,
+      ...(typeof obj.alt === 'string' ? { alt: obj.alt } : {}),
+    }
+  }
+  return undefined
+}
+
+function sanitizeLeaders(leaders: NBALeader[]): NBALeader[] {
+  return leaders.map((group) => ({
+    ...group,
+    leaders: Array.isArray(group.leaders)
+      ? group.leaders.map((entry) => ({
+          ...entry,
+          athlete: entry.athlete
+            ? {
+                ...entry.athlete,
+                headshot: sanitizeLeaderHeadshot(entry.athlete.headshot),
+              }
+            : entry.athlete,
+        }))
+      : [],
+  }))
+}
+
+/**
  * Immutably enriches and sanitizes raw NBA events from external feed.
  * Tracks assigned crews across the entire slate so no two games share the same broadcast crew.
  */
@@ -100,6 +172,7 @@ function enrichEvents(rawEvents: unknown[]): NBAEvent[] {
 
       const sanitizedCompetitors = (comp.competitors || []).map((c) => ({
         ...c,
+        ...(Array.isArray(c.leaders) ? { leaders: sanitizeLeaders(c.leaders) } : {}),
         team: {
           ...c.team,
           logo: sanitizeImageUrl(c.team?.logo),
@@ -297,6 +370,596 @@ export function fetchNBAScoreboard(
 
   if (signal) {
     return new Promise<FetchNBAScoreboardResult>((resolve, reject) => {
+      const onAbort = () => {
+        const abortErr = new Error('The operation was aborted.')
+        abortErr.name = 'AbortError'
+        reject(abortErr)
+      }
+      signal.addEventListener('abort', onAbort, { once: true })
+      fetchPromise.then(
+        (res) => {
+          signal.removeEventListener('abort', onAbort)
+          resolve(res)
+        },
+        (err) => {
+          signal.removeEventListener('abort', onAbort)
+          reject(err)
+        }
+      )
+    })
+  }
+
+  return fetchPromise
+}
+
+// -----------------------------------------------------------------------------
+// On-Demand Game Summary (Scouting Intel, Box Scores, Injuries, Real Shots)
+// -----------------------------------------------------------------------------
+
+const clampCoord = (val: number, min: number, max: number) => Math.max(min, Math.min(max, val))
+
+/**
+ * Converts an ESPN play-by-play shooting event into an NBAShot in 94x50 SVG court space.
+ * Filters out free throws and sentinel out-of-bounds coordinates.
+ */
+export function mapEspnPlayToShot(
+  play: unknown,
+  context: {
+    awayTeamId?: string
+    homeTeamId?: string
+    awayAbbr?: string
+    homeAbbr?: string
+    athleteHeadshots?: Map<string, string>
+  }
+): NBAShot | null {
+  if (!play || typeof play !== 'object') return null
+  const p = play as {
+    id?: unknown
+    text?: unknown
+    shootingPlay?: unknown
+    scoringPlay?: unknown
+    pointsAttempted?: unknown
+    clock?: { displayValue?: unknown }
+    period?: { number?: unknown }
+    team?: { id?: unknown }
+    participants?: Array<{ athlete?: { id?: unknown; displayName?: unknown } }>
+    coordinate?: { x?: unknown; y?: unknown }
+  }
+
+  if (p.shootingPlay !== true) return null
+  const text = typeof p.text === 'string' ? p.text : ''
+  const ptsAttempted = typeof p.pointsAttempted === 'number' ? p.pointsAttempted : 0
+  if (ptsAttempted === 1 || /free throw/i.test(text)) return null
+
+  const rawX = p.coordinate?.x
+  const rawY = p.coordinate?.y
+  if (typeof rawX !== 'number' || typeof rawY !== 'number' || !Number.isFinite(rawX) || !Number.isFinite(rawY)) {
+    return null
+  }
+  // ESPN uses ~0..50 width and -5..90 distance from rim; reject sentinel values like -214748340
+  if (rawX < 0 || rawX > 50 || rawY < -5 || rawY > 90) return null
+
+  const teamId = typeof p.team?.id === 'string' ? p.team.id : String(p.team?.id ?? '')
+  const isAway = Boolean(context.awayTeamId && teamId === context.awayTeamId)
+  const teamAbbr = isAway ? (context.awayAbbr || 'AWAY') : (context.homeAbbr || 'HOME')
+
+  // Away shoots at right basket (86.5, 25); Home shoots at left basket (7.5, 25)
+  const courtX = isAway ? clampCoord(86.5 - rawY, 3, 91) : clampCoord(7.5 + rawY, 3, 91)
+  const courtY = isAway ? clampCoord(rawX, 3, 47) : clampCoord(50 - rawX, 3, 47)
+
+  const points: 2 | 3 = ptsAttempted === 3 || /three point|3-point|3pt/i.test(text) ? 3 : 2
+  const made = Boolean(p.scoringPlay)
+
+  const distMatch = text.match(/(\d+)-foot/i)
+  const distanceFeet = distMatch
+    ? parseInt(distMatch[1], 10)
+    : Math.max(1, Math.round(Math.hypot(rawX - 25, rawY)))
+
+  let zone: NBAShot['zone']
+  if (points === 3) {
+    if (rawY <= 9 && (rawX <= 6 || rawX >= 44)) {
+      zone = rawX < 25 ? 'Left Corner 3' : 'Right Corner 3'
+    } else {
+      zone = 'Above the Break 3'
+    }
+  } else if (distanceFeet <= 4) {
+    zone = 'Restricted Area'
+  } else if (rawY <= 14 && rawX >= 17 && rawX <= 33) {
+    zone = 'In The Paint (Non-RA)'
+  } else {
+    zone = 'Mid-Range'
+  }
+
+  const participant = p.participants?.[0]?.athlete
+  const athleteId = participant?.id ? String(participant.id) : ''
+  const nameFromText = text.split(/\s+(?:makes|misses)\s+/i)[0]?.trim()
+  const shooter =
+    (typeof participant?.displayName === 'string' && participant.displayName) ||
+    nameFromText ||
+    'Player'
+
+  const shooterPhoto = athleteId ? context.athleteHeadshots?.get(athleteId) : undefined
+
+  return {
+    id: typeof p.id === 'string' ? p.id : `shot-${teamId}-${Math.round(rawX)}-${Math.round(rawY)}-${Math.random().toString(36).slice(2, 7)}`,
+    x: courtX,
+    y: courtY,
+    made,
+    points,
+    shooter,
+    ...(shooterPhoto ? { shooterPhoto } : {}),
+    teamId,
+    teamAbbr,
+    distanceFeet,
+    clock: typeof p.clock?.displayValue === 'string' ? p.clock.displayValue : '0:00',
+    period: typeof p.period?.number === 'number' ? p.period.number : 1,
+    description: text || `${shooter} ${made ? 'makes' : 'misses'} ${points}-pointer`,
+    zone,
+  }
+}
+
+function parseTeamSummaryStats(rawStats: unknown[]): NBATeamSummaryStats {
+  const stats: NBATeamSummaryStats = {}
+  if (!Array.isArray(rawStats)) return stats
+
+  const getVal = (names: string[]): string | undefined => {
+    for (const n of names) {
+      const found = rawStats.find(
+        (item) => item && typeof item === 'object' && (item as { name?: string }).name === n
+      ) as { displayValue?: unknown } | undefined
+      if (found && typeof found.displayValue === 'string' && found.displayValue.trim()) {
+        return found.displayValue.trim()
+      }
+    }
+    return undefined
+  }
+
+  stats.streak = getVal(['streak'])
+  stats.lastTen = getVal(['Last Ten Games', 'lastTenGames'])
+  stats.avgPoints = getVal(['avgPoints'])
+  stats.avgPointsAgainst = getVal(['avgPointsAgainst'])
+  stats.fieldGoalPct = getVal(['fieldGoalPct'])
+  stats.threePointPct = getVal(['threePointFieldGoalPct', 'threePointPct'])
+  stats.freeThrowPct = getVal(['freeThrowPct'])
+  stats.avgRebounds = getVal(['avgRebounds'])
+  stats.avgAssists = getVal(['avgAssists'])
+  stats.avgSteals = getVal(['avgSteals'])
+  stats.avgBlocks = getVal(['avgBlocks'])
+  stats.avgTurnovers = getVal(['avgTotalTurnovers', 'avgTurnovers'])
+  stats.fgMadeAttempted = getVal(['fieldGoalsMade-fieldGoalsAttempted'])
+  stats.threePtMadeAttempted = getVal(['threePointFieldGoalsMade-threePointFieldGoalsAttempted'])
+  stats.ftMadeAttempted = getVal(['freeThrowsMade-freeThrowsAttempted'])
+  stats.totalRebounds = getVal(['totalRebounds', 'rebounds'])
+  stats.offensiveRebounds = getVal(['offensiveRebounds'])
+  stats.defensiveRebounds = getVal(['defensiveRebounds'])
+  stats.assists = getVal(['assists'])
+  stats.steals = getVal(['steals'])
+  stats.blocks = getVal(['blocks'])
+  stats.turnovers = getVal(['turnovers', 'totalTurnovers'])
+  stats.pointsInPaint = getVal(['pointsInPaint'])
+  stats.fastBreakPoints = getVal(['fastBreakPoints'])
+  stats.turnoverPoints = getVal(['turnoverPoints'])
+  stats.largestLead = getVal(['largestLead'])
+  stats.leadChanges = getVal(['leadChanges'])
+  stats.leadPercentage = getVal(['leadPercentage'])
+
+  return stats
+}
+
+function parseBoxPlayers(
+  rawGroup: unknown,
+  athleteHeadshots: Map<string, string>
+): NBAPlayerBoxLine[] {
+  if (!rawGroup || typeof rawGroup !== 'object') return []
+  const group = rawGroup as {
+    statistics?: Array<{
+      labels?: unknown[]
+      athletes?: Array<{
+        didNotPlay?: boolean
+        starter?: boolean
+        athlete?: {
+          id?: unknown
+          displayName?: unknown
+          shortName?: unknown
+          jersey?: unknown
+          position?: { abbreviation?: unknown }
+          headshot?: unknown
+        }
+        stats?: unknown[]
+      }>
+    }>
+  }
+
+  const statBlock = group.statistics?.[0]
+  if (!statBlock || !Array.isArray(statBlock.labels) || !Array.isArray(statBlock.athletes)) {
+    return []
+  }
+
+  const labels = statBlock.labels.map((l) => String(l).toUpperCase())
+  const idx = {
+    min: labels.indexOf('MIN'),
+    pts: labels.indexOf('PTS'),
+    fg: labels.indexOf('FG'),
+    threePt: labels.indexOf('3PT'),
+    ft: labels.indexOf('FT'),
+    reb: labels.indexOf('REB'),
+    ast: labels.indexOf('AST'),
+    to: labels.indexOf('TO'),
+    stl: labels.indexOf('STL'),
+    blk: labels.indexOf('BLK'),
+    pm: labels.indexOf('+/-'),
+  }
+
+  const getCell = (row: unknown[], colIdx: number, fallback = '0'): string => {
+    if (colIdx < 0 || colIdx >= row.length) return fallback
+    const val = row[colIdx]
+    return val !== undefined && val !== null && String(val).trim() ? String(val).trim() : fallback
+  }
+
+  const players: NBAPlayerBoxLine[] = []
+  for (const item of statBlock.athletes) {
+    if (!item || item.didNotPlay || !Array.isArray(item.stats) || item.stats.length === 0) continue
+    const ath = item.athlete
+    if (!ath) continue
+
+    const id = ath.id ? String(ath.id) : ''
+    const headshot = sanitizeOptionalHeadshotUrl(
+      typeof ath.headshot === 'string'
+        ? ath.headshot
+        : (ath.headshot as { href?: unknown } | undefined)?.href
+    )
+    if (id && headshot) {
+      athleteHeadshots.set(id, headshot)
+    }
+
+    const pts = parseInt(getCell(item.stats, idx.pts, '0'), 10) || 0
+    const reb = parseInt(getCell(item.stats, idx.reb, '0'), 10) || 0
+    const ast = parseInt(getCell(item.stats, idx.ast, '0'), 10) || 0
+    const stl = parseInt(getCell(item.stats, idx.stl, '0'), 10) || 0
+    const blk = parseInt(getCell(item.stats, idx.blk, '0'), 10) || 0
+    const tov = parseInt(getCell(item.stats, idx.to, '0'), 10) || 0
+
+    players.push({
+      id: id || String(ath.displayName || 'player'),
+      name: typeof ath.displayName === 'string' ? ath.displayName : 'Player',
+      shortName: typeof ath.shortName === 'string' ? ath.shortName : (typeof ath.displayName === 'string' ? ath.displayName : 'Player'),
+      jersey: typeof ath.jersey === 'string' ? ath.jersey : undefined,
+      position: typeof ath.position?.abbreviation === 'string' ? ath.position.abbreviation : undefined,
+      ...(headshot ? { headshot } : {}),
+      starter: Boolean(item.starter),
+      min: getCell(item.stats, idx.min, '0'),
+      pts,
+      reb,
+      ast,
+      fg: getCell(item.stats, idx.fg, '0-0'),
+      threePt: getCell(item.stats, idx.threePt, '0-0'),
+      ft: getCell(item.stats, idx.ft, '0-0'),
+      stl,
+      blk,
+      tov,
+      plusMinus: getCell(item.stats, idx.pm, '0'),
+    })
+  }
+
+  players.sort((a, b) => b.pts - a.pts || b.reb + b.ast - (a.reb + a.ast))
+  return players.slice(0, 8)
+}
+
+/**
+ * Parses ESPN's game summary endpoint payload into a typed NBAGameSummary object.
+ */
+export function parseSummaryPayload(
+  eventId: string,
+  raw: unknown,
+  context: {
+    homeTeamId?: string
+    awayTeamId?: string
+    homeAbbr?: string
+    awayAbbr?: string
+  } = {}
+): NBAGameSummary | null {
+  if (!raw || typeof raw !== 'object') return null
+  const data = raw as {
+    boxscore?: {
+      teams?: Array<{
+        team?: { id?: unknown; abbreviation?: unknown }
+        homeAway?: unknown
+        statistics?: unknown[]
+      }>
+      players?: Array<{
+        team?: { id?: unknown; abbreviation?: unknown }
+      }>
+    }
+    leaders?: Array<{
+      team?: { id?: unknown; abbreviation?: unknown }
+      leaders?: NBALeader[]
+    }>
+    injuries?: Array<{
+      team?: { id?: unknown; abbreviation?: unknown }
+      injuries?: Array<{
+        status?: unknown
+        details?: { type?: unknown }
+        athlete?: { displayName?: unknown; position?: { abbreviation?: unknown } }
+      }>
+    }>
+    lastFiveGames?: Array<{
+      team?: { id?: unknown; abbreviation?: unknown }
+      events?: Array<{
+        gameResult?: unknown
+        score?: unknown
+        homeAway?: unknown
+        opponent?: { abbreviation?: unknown }
+      }>
+    }>
+    predictor?: {
+      homeTeam?: { gameProjection?: unknown }
+      awayTeam?: { gameProjection?: unknown }
+    }
+    seasonseries?: Array<{ summary?: unknown }>
+    gameInfo?: {
+      attendance?: unknown
+      officials?: Array<{ displayName?: unknown; fullName?: unknown }>
+    }
+    plays?: unknown[]
+    header?: {
+      competitions?: Array<{
+        competitors?: Array<{
+          id?: unknown
+          homeAway?: unknown
+          team?: { id?: unknown; abbreviation?: unknown }
+        }>
+      }>
+    }
+  }
+
+  // Resolve home & away team IDs from header or context
+  const headerComps = data.header?.competitions?.[0]?.competitors || []
+  const resolvedHomeComp = headerComps.find((c) => c.homeAway === 'home')
+  const resolvedAwayComp = headerComps.find((c) => c.homeAway === 'away')
+
+  const homeTeamId =
+    context.homeTeamId ||
+    (resolvedHomeComp?.team?.id ? String(resolvedHomeComp.team.id) : resolvedHomeComp?.id ? String(resolvedHomeComp.id) : undefined)
+  const awayTeamId =
+    context.awayTeamId ||
+    (resolvedAwayComp?.team?.id ? String(resolvedAwayComp.team.id) : resolvedAwayComp?.id ? String(resolvedAwayComp.id) : undefined)
+  const homeAbbr =
+    context.homeAbbr ||
+    (typeof resolvedHomeComp?.team?.abbreviation === 'string' ? resolvedHomeComp.team.abbreviation : 'HOME')
+  const awayAbbr =
+    context.awayAbbr ||
+    (typeof resolvedAwayComp?.team?.abbreviation === 'string' ? resolvedAwayComp.team.abbreviation : 'AWAY')
+
+  const athleteHeadshots = new Map<string, string>()
+
+  const buildTeamSummary = (side: 'home' | 'away'): NBATeamSummary | null => {
+    const targetId = side === 'home' ? homeTeamId : awayTeamId
+    const targetAbbr = side === 'home' ? homeAbbr : awayAbbr
+
+    const matchesTeam = (teamObj?: { id?: unknown; abbreviation?: unknown }, explicitSide?: unknown) => {
+      if (explicitSide === side) return true
+      if (targetId && teamObj?.id && String(teamObj.id) === targetId) return true
+      if (targetAbbr && typeof teamObj?.abbreviation === 'string' && teamObj.abbreviation.toUpperCase() === targetAbbr.toUpperCase()) {
+        return true
+      }
+      return false
+    }
+
+    const boxTeam = data.boxscore?.teams?.find((t) => matchesTeam(t.team, t.homeAway))
+    const leaderGroup = data.leaders?.find((l) => matchesTeam(l.team))
+    const playerGroup = data.boxscore?.players?.find((p) => matchesTeam(p.team))
+    const injuryGroup = data.injuries?.find((i) => matchesTeam(i.team))
+    const lastFiveGroup = data.lastFiveGames?.find((g) => matchesTeam(g.team))
+
+    if (!boxTeam && !leaderGroup && !playerGroup && !injuryGroup && !lastFiveGroup) {
+      return null
+    }
+
+    const stats = parseTeamSummaryStats(boxTeam?.statistics || [])
+    const leaders = Array.isArray(leaderGroup?.leaders) ? sanitizeLeaders(leaderGroup.leaders) : []
+    const topPlayers = parseBoxPlayers(playerGroup, athleteHeadshots)
+
+    const injuries: NBAInjuryItem[] = Array.isArray(injuryGroup?.injuries)
+      ? injuryGroup.injuries
+          .filter((inj) => inj?.athlete?.displayName && inj?.status)
+          .slice(0, 8)
+          .map((inj) => ({
+            playerName: String(inj.athlete!.displayName),
+            position: typeof inj.athlete?.position?.abbreviation === 'string' ? inj.athlete.position.abbreviation : undefined,
+            status: String(inj.status),
+            detail: typeof inj.details?.type === 'string' ? inj.details.type : undefined,
+          }))
+      : []
+
+    const lastFiveGames: NBALastGameItem[] = Array.isArray(lastFiveGroup?.events)
+      ? lastFiveGroup.events
+          .slice(0, 5)
+          .filter((ev) => ev?.gameResult === 'W' || ev?.gameResult === 'L')
+          .map((ev) => ({
+            result: ev.gameResult as 'W' | 'L',
+            score: typeof ev.score === 'string' ? ev.score : '',
+            opponentAbbr: typeof ev.opponent?.abbreviation === 'string' ? ev.opponent.abbreviation : '',
+            homeAway: typeof ev.homeAway === 'string' ? ev.homeAway : undefined,
+          }))
+      : []
+
+    return {
+      teamId: targetId || String(boxTeam?.team?.id || ''),
+      abbreviation: targetAbbr,
+      homeAway: side,
+      leaders,
+      stats,
+      topPlayers,
+      injuries,
+      lastFiveGames,
+    }
+  }
+
+  const awayTeam = buildTeamSummary('away')
+  const homeTeam = buildTeamSummary('home')
+
+  const shots: NBAShot[] = []
+  if (Array.isArray(data.plays)) {
+    for (const play of data.plays) {
+      const mapped = mapEspnPlayToShot(play, {
+        awayTeamId,
+        homeTeamId,
+        awayAbbr,
+        homeAbbr,
+        athleteHeadshots,
+      })
+      if (mapped) shots.push(mapped)
+    }
+  }
+
+  let predictor: NBAGameSummary['predictor']
+  const homeProj = parseFloat(String(data.predictor?.homeTeam?.gameProjection ?? ''))
+  const awayProj = parseFloat(String(data.predictor?.awayTeam?.gameProjection ?? ''))
+  if (Number.isFinite(homeProj) && Number.isFinite(awayProj)) {
+    predictor = { homeWinPct: homeProj, awayWinPct: awayProj }
+  }
+
+  const seasonSeries =
+    typeof data.seasonseries?.[0]?.summary === 'string'
+      ? data.seasonseries[0].summary
+      : undefined
+
+  const attendance =
+    typeof data.gameInfo?.attendance === 'number' && data.gameInfo.attendance > 0
+      ? data.gameInfo.attendance
+      : undefined
+
+  const officials = Array.isArray(data.gameInfo?.officials)
+    ? data.gameInfo.officials
+        .map((o) => (typeof o.displayName === 'string' ? o.displayName : typeof o.fullName === 'string' ? o.fullName : ''))
+        .filter(Boolean)
+    : undefined
+
+  return {
+    eventId,
+    awayTeam,
+    homeTeam,
+    shots,
+    predictor,
+    seasonSeries,
+    attendance,
+    officials,
+  }
+}
+
+/**
+ * Fetches rich game summary intelligence (scouting splits, injuries, last-5, full box score, and shots)
+ * for a spotlighted NBA event with TTL caching, in-flight deduplication, and silent graceful fallback.
+ */
+export function fetchNBAGameSummary(
+  eventId: string,
+  gameState: 'pre' | 'in' | 'post' | string = 'pre',
+  signal?: AbortSignal,
+  context: {
+    homeTeamId?: string
+    awayTeamId?: string
+    homeAbbr?: string
+    awayAbbr?: string
+  } = {}
+): Promise<NBAGameSummary | null> {
+  const cleanId = typeof eventId === 'string' ? eventId.replace(/[^A-Za-z0-9_-]/g, '') : ''
+  if (!cleanId) return Promise.resolve(null)
+
+  const mockSummary = MOCK_GAME_SUMMARIES.get(cleanId)
+  if (mockSummary) {
+    return Promise.resolve(mockSummary)
+  }
+
+  const cacheKey = cleanId
+  const cached = SUMMARY_CACHE.get(cacheKey)
+  if (cached && cached.gameState === gameState && Date.now() < cached.expiresAt) {
+    return Promise.resolve(cached.data)
+  }
+
+  if (signal?.aborted) {
+    const abortErr = new Error('The operation was aborted.')
+    abortErr.name = 'AbortError'
+    return Promise.reject(abortErr)
+  }
+
+  const inFlight = IN_FLIGHT_SUMMARY_REQUESTS.get(cacheKey)
+  if (inFlight) {
+    if (!signal) return inFlight
+    return new Promise<NBAGameSummary | null>((resolve, reject) => {
+      const onAbort = () => {
+        const abortErr = new Error('The operation was aborted.')
+        abortErr.name = 'AbortError'
+        reject(abortErr)
+      }
+      signal.addEventListener('abort', onAbort, { once: true })
+      inFlight.then(
+        (res) => {
+          signal.removeEventListener('abort', onAbort)
+          resolve(res)
+        },
+        (err) => {
+          signal.removeEventListener('abort', onAbort)
+          reject(err)
+        }
+      )
+    })
+  }
+
+  const executeFetch = async (): Promise<NBAGameSummary | null> => {
+    const url = new URL(ESPN_NBA_SUMMARY_URL)
+    url.searchParams.set('event', cleanId)
+
+    try {
+      const fetchRaw = async (fetchSignal?: AbortSignal) => {
+        const response = await fetch(url.toString(), {
+          signal: fetchSignal,
+          headers: { Accept: 'application/json' },
+        })
+        if (!response.ok) {
+          if (response.status >= 500 || response.status === 429) {
+            throw new TransientNetworkError(`ESPN Summary API returned ${response.status}`, response.status)
+          }
+          throw new DashboardDomainError(`ESPN Summary API returned ${response.status}`, `HTTP_${response.status}`)
+        }
+        return response.json()
+      }
+
+      const rawData = await withExponentialBackoff(
+        fetchRaw,
+        { maxRetries: 1, initialDelayMs: 60, maxDelayMs: 180, jitter: false },
+        signal
+      )
+
+      const parsed = parseSummaryPayload(cleanId, rawData, context)
+      if (!parsed) return null
+
+      const ttlMs = gameState === 'in' ? 15_000 : gameState === 'post' ? 1_800_000 : 300_000
+      if (SUMMARY_CACHE.size >= MAX_SUMMARY_CACHE_ENTRIES) {
+        const oldestKey = SUMMARY_CACHE.keys().next().value
+        if (oldestKey) SUMMARY_CACHE.delete(oldestKey)
+      }
+      SUMMARY_CACHE.set(cacheKey, {
+        data: parsed,
+        gameState,
+        expiresAt: Date.now() + ttlMs,
+      })
+
+      return parsed
+    } catch (err: unknown) {
+      if (isAbortError(err)) throw err
+      logger.warn('Game summary fetch unavailable; using scoreboard baseline data', { eventId: cleanId }, err)
+      return cached?.data ?? null
+    }
+  }
+
+  const fetchPromise = executeFetch().finally(() => {
+    IN_FLIGHT_SUMMARY_REQUESTS.delete(cacheKey)
+  })
+
+  IN_FLIGHT_SUMMARY_REQUESTS.set(cacheKey, fetchPromise)
+
+  if (signal) {
+    return new Promise<NBAGameSummary | null>((resolve, reject) => {
       const onAbort = () => {
         const abortErr = new Error('The operation was aborted.')
         abortErr.name = 'AbortError'
@@ -887,7 +1550,87 @@ export const MOCK_NBA_EVENTS: NBAEvent[] = [
             id: '24',
             homeAway: 'home',
             score: '0',
-            records: [{ summary: '38-44' }],
+            records: [
+              { name: 'overall', type: 'total', summary: '38-44' },
+              { name: 'Home', type: 'home', summary: '22-19' },
+              { name: 'Road', type: 'road', summary: '16-25' },
+            ],
+            statistics: [
+              { name: 'avgPoints', abbreviation: 'PTS', displayValue: '114.2' },
+              { name: 'fieldGoalPct', abbreviation: 'FG%', displayValue: '46.8' },
+              { name: 'threePointPct', abbreviation: '3P%', displayValue: '35.9' },
+              { name: 'freeThrowPct', abbreviation: 'FT%', displayValue: '77.4' },
+              { name: 'avgRebounds', abbreviation: 'REB', displayValue: '44.6' },
+              { name: 'avgAssists', abbreviation: 'AST', displayValue: '28.8' },
+            ],
+            leaders: [
+              {
+                name: 'pointsPerGame',
+                displayName: 'Points Per Game',
+                shortDisplayName: 'PPG',
+                abbreviation: 'PTS',
+                leaders: [
+                  {
+                    displayValue: '24.3',
+                    value: 24.3,
+                    athlete: {
+                      id: '5104157',
+                      fullName: 'Victor Wembanyama',
+                      displayName: 'Victor Wembanyama',
+                      shortName: 'V. Wembanyama',
+                      jersey: '1',
+                      position: { abbreviation: 'C' },
+                      headshot: 'https://a.espncdn.com/i/headshots/nba/players/full/5104157.png',
+                      team: { id: '24', abbreviation: 'SAS' },
+                    },
+                  },
+                ],
+              },
+              {
+                name: 'reboundsPerGame',
+                displayName: 'Rebounds Per Game',
+                shortDisplayName: 'RPG',
+                abbreviation: 'REB',
+                leaders: [
+                  {
+                    displayValue: '11.0',
+                    value: 11.0,
+                    athlete: {
+                      id: '5104157',
+                      fullName: 'Victor Wembanyama',
+                      displayName: 'Victor Wembanyama',
+                      shortName: 'V. Wembanyama',
+                      jersey: '1',
+                      position: { abbreviation: 'C' },
+                      headshot: 'https://a.espncdn.com/i/headshots/nba/players/full/5104157.png',
+                      team: { id: '24', abbreviation: 'SAS' },
+                    },
+                  },
+                ],
+              },
+              {
+                name: 'assistsPerGame',
+                displayName: 'Assists Per Game',
+                shortDisplayName: 'APG',
+                abbreviation: 'AST',
+                leaders: [
+                  {
+                    displayValue: '5.9',
+                    value: 5.9,
+                    athlete: {
+                      id: '4845367',
+                      fullName: 'Stephon Castle',
+                      displayName: 'Stephon Castle',
+                      shortName: 'S. Castle',
+                      jersey: '5',
+                      position: { abbreviation: 'G' },
+                      headshot: 'https://a.espncdn.com/i/headshots/nba/players/full/4845367.png',
+                      team: { id: '24', abbreviation: 'SAS' },
+                    },
+                  },
+                ],
+              },
+            ],
             team: {
               id: '24',
               name: 'Spurs',
@@ -903,7 +1646,87 @@ export const MOCK_NBA_EVENTS: NBAEvent[] = [
             id: '25',
             homeAway: 'away',
             score: '0',
-            records: [{ summary: '57-25' }],
+            records: [
+              { name: 'overall', type: 'total', summary: '57-25' },
+              { name: 'Home', type: 'home', summary: '32-9' },
+              { name: 'Road', type: 'road', summary: '25-16' },
+            ],
+            statistics: [
+              { name: 'avgPoints', abbreviation: 'PTS', displayValue: '120.4', rankDisplayValue: '3rd' },
+              { name: 'fieldGoalPct', abbreviation: 'FG%', displayValue: '49.1', rankDisplayValue: '2nd' },
+              { name: 'threePointPct', abbreviation: '3P%', displayValue: '38.4', rankDisplayValue: '2nd' },
+              { name: 'freeThrowPct', abbreviation: 'FT%', displayValue: '81.9', rankDisplayValue: '4th' },
+              { name: 'avgRebounds', abbreviation: 'REB', displayValue: '44.9' },
+              { name: 'avgAssists', abbreviation: 'AST', displayValue: '27.2' },
+            ],
+            leaders: [
+              {
+                name: 'pointsPerGame',
+                displayName: 'Points Per Game',
+                shortDisplayName: 'PPG',
+                abbreviation: 'PTS',
+                leaders: [
+                  {
+                    displayValue: '32.4',
+                    value: 32.4,
+                    athlete: {
+                      id: '4278073',
+                      fullName: 'Shai Gilgeous-Alexander',
+                      displayName: 'Shai Gilgeous-Alexander',
+                      shortName: 'S. Gilgeous-Alexander',
+                      jersey: '2',
+                      position: { abbreviation: 'G' },
+                      headshot: 'https://a.espncdn.com/i/headshots/nba/players/full/4278073.png',
+                      team: { id: '25', abbreviation: 'OKC' },
+                    },
+                  },
+                ],
+              },
+              {
+                name: 'reboundsPerGame',
+                displayName: 'Rebounds Per Game',
+                shortDisplayName: 'RPG',
+                abbreviation: 'REB',
+                leaders: [
+                  {
+                    displayValue: '10.6',
+                    value: 10.6,
+                    athlete: {
+                      id: '4278585',
+                      fullName: 'Isaiah Hartenstein',
+                      displayName: 'Isaiah Hartenstein',
+                      shortName: 'I. Hartenstein',
+                      jersey: '55',
+                      position: { abbreviation: 'C' },
+                      headshot: 'https://a.espncdn.com/i/headshots/nba/players/full/4278585.png',
+                      team: { id: '25', abbreviation: 'OKC' },
+                    },
+                  },
+                ],
+              },
+              {
+                name: 'assistsPerGame',
+                displayName: 'Assists Per Game',
+                shortDisplayName: 'APG',
+                abbreviation: 'AST',
+                leaders: [
+                  {
+                    displayValue: '6.4',
+                    value: 6.4,
+                    athlete: {
+                      id: '4278073',
+                      fullName: 'Shai Gilgeous-Alexander',
+                      displayName: 'Shai Gilgeous-Alexander',
+                      shortName: 'S. Gilgeous-Alexander',
+                      jersey: '2',
+                      position: { abbreviation: 'G' },
+                      headshot: 'https://a.espncdn.com/i/headshots/nba/players/full/4278073.png',
+                      team: { id: '25', abbreviation: 'OKC' },
+                    },
+                  },
+                ],
+              },
+            ],
             team: {
               id: '25',
               name: 'Thunder',
@@ -977,7 +1800,92 @@ export const MOCK_NBA_EVENTS: NBAEvent[] = [
               { value: 25, displayValue: '25', period: 4 },
               { value: 11, displayValue: '11', period: 5 },
             ],
-            records: [{ summary: '56-26' }],
+            records: [
+              { name: 'overall', type: 'total', summary: '56-26' },
+              { name: 'Home', type: 'home', summary: '30-11' },
+              { name: 'Road', type: 'road', summary: '26-15' },
+            ],
+            statistics: [
+              { name: 'fieldGoalsMade', abbreviation: 'FGM', displayValue: '42' },
+              { name: 'fieldGoalsAttempted', abbreviation: 'FGA', displayValue: '85' },
+              { name: 'fieldGoalPct', abbreviation: 'FG%', displayValue: '49.4' },
+              { name: 'threePointFieldGoalsMade', abbreviation: '3PM', displayValue: '15' },
+              { name: 'threePointFieldGoalsAttempted', abbreviation: '3PA', displayValue: '37' },
+              { name: 'threePointPct', abbreviation: '3P%', displayValue: '40.5' },
+              { name: 'freeThrowsMade', abbreviation: 'FTM', displayValue: '17' },
+              { name: 'freeThrowsAttempted', abbreviation: 'FTA', displayValue: '21' },
+              { name: 'freeThrowPct', abbreviation: 'FT%', displayValue: '81.0' },
+              { name: 'rebounds', abbreviation: 'REB', displayValue: '46' },
+              { name: 'assists', abbreviation: 'AST', displayValue: '28' },
+            ],
+            leaders: [
+              {
+                name: 'points',
+                displayName: 'Points',
+                shortDisplayName: 'Pts',
+                abbreviation: 'Pts',
+                leaders: [
+                  {
+                    displayValue: '34',
+                    value: 34,
+                    athlete: {
+                      id: '4594268',
+                      fullName: 'Anthony Edwards',
+                      displayName: 'Anthony Edwards',
+                      shortName: 'A. Edwards',
+                      jersey: '5',
+                      position: { abbreviation: 'G' },
+                      headshot: 'https://a.espncdn.com/i/headshots/nba/players/full/4594268.png',
+                      team: { id: '16', abbreviation: 'MIN' },
+                    },
+                  },
+                ],
+              },
+              {
+                name: 'rebounds',
+                displayName: 'Rebounds',
+                shortDisplayName: 'Reb',
+                abbreviation: 'Reb',
+                leaders: [
+                  {
+                    displayValue: '14',
+                    value: 14,
+                    athlete: {
+                      id: '3032976',
+                      fullName: 'Rudy Gobert',
+                      displayName: 'Rudy Gobert',
+                      shortName: 'R. Gobert',
+                      jersey: '27',
+                      position: { abbreviation: 'C' },
+                      headshot: 'https://a.espncdn.com/i/headshots/nba/players/full/3032976.png',
+                      team: { id: '16', abbreviation: 'MIN' },
+                    },
+                  },
+                ],
+              },
+              {
+                name: 'assists',
+                displayName: 'Assists',
+                shortDisplayName: 'Ast',
+                abbreviation: 'Ast',
+                leaders: [
+                  {
+                    displayValue: '8',
+                    value: 8,
+                    athlete: {
+                      id: '4594268',
+                      fullName: 'Anthony Edwards',
+                      displayName: 'Anthony Edwards',
+                      shortName: 'A. Edwards',
+                      jersey: '5',
+                      position: { abbreviation: 'G' },
+                      headshot: 'https://a.espncdn.com/i/headshots/nba/players/full/4594268.png',
+                      team: { id: '16', abbreviation: 'MIN' },
+                    },
+                  },
+                ],
+              },
+            ],
             team: {
               id: '16',
               name: 'Timberwolves',
@@ -1001,7 +1909,92 @@ export const MOCK_NBA_EVENTS: NBAEvent[] = [
               { value: 23, displayValue: '23', period: 4 },
               { value: 7, displayValue: '7', period: 5 },
             ],
-            records: [{ summary: '57-25' }],
+            records: [
+              { name: 'overall', type: 'total', summary: '57-25' },
+              { name: 'Home', type: 'home', summary: '33-8' },
+              { name: 'Road', type: 'road', summary: '24-17' },
+            ],
+            statistics: [
+              { name: 'fieldGoalsMade', abbreviation: 'FGM', displayValue: '41' },
+              { name: 'fieldGoalsAttempted', abbreviation: 'FGA', displayValue: '88' },
+              { name: 'fieldGoalPct', abbreviation: 'FG%', displayValue: '46.6' },
+              { name: 'threePointFieldGoalsMade', abbreviation: '3PM', displayValue: '12' },
+              { name: 'threePointFieldGoalsAttempted', abbreviation: '3PA', displayValue: '34' },
+              { name: 'threePointPct', abbreviation: '3P%', displayValue: '35.3' },
+              { name: 'freeThrowsMade', abbreviation: 'FTM', displayValue: '18' },
+              { name: 'freeThrowsAttempted', abbreviation: 'FTA', displayValue: '22' },
+              { name: 'freeThrowPct', abbreviation: 'FT%', displayValue: '81.8' },
+              { name: 'rebounds', abbreviation: 'REB', displayValue: '43' },
+              { name: 'assists', abbreviation: 'AST', displayValue: '29' },
+            ],
+            leaders: [
+              {
+                name: 'points',
+                displayName: 'Points',
+                shortDisplayName: 'Pts',
+                abbreviation: 'Pts',
+                leaders: [
+                  {
+                    displayValue: '33',
+                    value: 33,
+                    athlete: {
+                      id: '3112335',
+                      fullName: 'Nikola Jokic',
+                      displayName: 'Nikola Jokic',
+                      shortName: 'N. Jokic',
+                      jersey: '15',
+                      position: { abbreviation: 'C' },
+                      headshot: 'https://a.espncdn.com/i/headshots/nba/players/full/3112335.png',
+                      team: { id: '7', abbreviation: 'DEN' },
+                    },
+                  },
+                ],
+              },
+              {
+                name: 'rebounds',
+                displayName: 'Rebounds',
+                shortDisplayName: 'Reb',
+                abbreviation: 'Reb',
+                leaders: [
+                  {
+                    displayValue: '15',
+                    value: 15,
+                    athlete: {
+                      id: '3112335',
+                      fullName: 'Nikola Jokic',
+                      displayName: 'Nikola Jokic',
+                      shortName: 'N. Jokic',
+                      jersey: '15',
+                      position: { abbreviation: 'C' },
+                      headshot: 'https://a.espncdn.com/i/headshots/nba/players/full/3112335.png',
+                      team: { id: '7', abbreviation: 'DEN' },
+                    },
+                  },
+                ],
+              },
+              {
+                name: 'assists',
+                displayName: 'Assists',
+                shortDisplayName: 'Ast',
+                abbreviation: 'Ast',
+                leaders: [
+                  {
+                    displayValue: '11',
+                    value: 11,
+                    athlete: {
+                      id: '3112335',
+                      fullName: 'Nikola Jokic',
+                      displayName: 'Nikola Jokic',
+                      shortName: 'N. Jokic',
+                      jersey: '15',
+                      position: { abbreviation: 'C' },
+                      headshot: 'https://a.espncdn.com/i/headshots/nba/players/full/3112335.png',
+                      team: { id: '7', abbreviation: 'DEN' },
+                    },
+                  },
+                ],
+              },
+            ],
             team: {
               id: '7',
               name: 'Nuggets',
@@ -1018,3 +2011,321 @@ export const MOCK_NBA_EVENTS: NBAEvent[] = [
     ],
   },
 ]
+
+const MOCK_GAME_SUMMARIES = new Map<string, NBAGameSummary>([
+  [
+    '401909091',
+    {
+      eventId: '401909091',
+      seasonSeries: 'OKC leads season series 2-1',
+      predictor: { awayWinPct: 64.2, homeWinPct: 35.8 },
+      shots: [],
+      awayTeam: {
+        teamId: '25',
+        abbreviation: 'OKC',
+        homeAway: 'away',
+        leaders: [],
+        stats: {
+          streak: 'W4',
+          lastTen: '8-2',
+          avgPoints: '120.4',
+          avgPointsAgainst: '107.6',
+          fieldGoalPct: '49.1',
+          threePointPct: '38.4',
+          freeThrowPct: '81.9',
+          avgRebounds: '44.9',
+          avgAssists: '27.2',
+          avgSteals: '10.3',
+          avgBlocks: '5.8',
+          avgTurnovers: '11.9',
+        },
+        topPlayers: [],
+        injuries: [
+          { playerName: 'Alex Caruso', position: 'G', status: 'Day-To-Day', detail: 'Hip' },
+        ],
+        lastFiveGames: [
+          { result: 'W', score: '124-110', opponentAbbr: 'PHX' },
+          { result: 'W', score: '118-104', opponentAbbr: 'MEM' },
+          { result: 'W', score: '131-116', opponentAbbr: 'SAC' },
+          { result: 'W', score: '112-98', opponentAbbr: 'POR' },
+          { result: 'L', score: '114-119', opponentAbbr: 'DEN' },
+        ],
+      },
+      homeTeam: {
+        teamId: '24',
+        abbreviation: 'SAS',
+        homeAway: 'home',
+        leaders: [],
+        stats: {
+          streak: 'W1',
+          lastTen: '6-4',
+          avgPoints: '114.2',
+          avgPointsAgainst: '113.8',
+          fieldGoalPct: '46.8',
+          threePointPct: '35.9',
+          freeThrowPct: '77.4',
+          avgRebounds: '44.6',
+          avgAssists: '28.8',
+          avgSteals: '8.1',
+          avgBlocks: '6.4',
+          avgTurnovers: '14.2',
+        },
+        topPlayers: [],
+        injuries: [
+          { playerName: 'Jeremy Sochan', position: 'F', status: 'Out', detail: 'Back' },
+        ],
+        lastFiveGames: [
+          { result: 'W', score: '117-109', opponentAbbr: 'DAL' },
+          { result: 'L', score: '105-118', opponentAbbr: 'HOU' },
+          { result: 'W', score: '121-112', opponentAbbr: 'UTA' },
+          { result: 'W', score: '110-103', opponentAbbr: 'NOP' },
+          { result: 'L', score: '108-120', opponentAbbr: 'LAL' },
+        ],
+      },
+    },
+  ],
+  [
+    '401909092',
+    {
+      eventId: '401909092',
+      attendance: 18978,
+      shots: [
+        {
+          id: 'mock-post-1',
+          shooter: 'Anthony Edwards',
+          teamId: '16',
+          teamAbbr: 'MIN',
+          x: 24,
+          y: 8,
+          made: true,
+          points: 3,
+          distanceFeet: 25,
+          clock: '0:24',
+          period: 5,
+          description: 'Anthony Edwards makes 25-foot step-back 3-pointer in OT',
+          zone: 'Above the Break 3',
+        },
+        {
+          id: 'mock-post-2',
+          shooter: 'Nikola Jokic',
+          teamId: '7',
+          teamAbbr: 'DEN',
+          x: 79,
+          y: 23,
+          made: true,
+          points: 2,
+          distanceFeet: 8,
+          clock: '1:05',
+          period: 5,
+          description: 'Nikola Jokic makes 8-foot turnaround hook shot',
+          zone: 'In The Paint (Non-RA)',
+        },
+        {
+          id: 'mock-post-3',
+          shooter: 'Jaden McDaniels',
+          teamId: '16',
+          teamAbbr: 'MIN',
+          x: 11,
+          y: 45,
+          made: true,
+          points: 3,
+          distanceFeet: 23,
+          clock: '2:12',
+          period: 4,
+          description: 'Jaden McDaniels makes 23-foot corner 3-pointer',
+          zone: 'Right Corner 3',
+        },
+        {
+          id: 'mock-post-4',
+          shooter: 'Jamal Murray',
+          teamId: '7',
+          teamAbbr: 'DEN',
+          x: 68,
+          y: 16,
+          made: false,
+          points: 3,
+          distanceFeet: 26,
+          clock: '0:04',
+          period: 5,
+          description: 'Jamal Murray misses 26-foot game-tying 3-pointer',
+          zone: 'Above the Break 3',
+        },
+      ],
+      awayTeam: {
+        teamId: '7',
+        abbreviation: 'DEN',
+        homeAway: 'away',
+        leaders: [],
+        stats: {
+          fgMadeAttempted: '41-88',
+          fieldGoalPct: '46.6',
+          threePtMadeAttempted: '12-34',
+          threePointPct: '35.3',
+          ftMadeAttempted: '18-22',
+          freeThrowPct: '81.8',
+          totalRebounds: '43',
+          offensiveRebounds: '10',
+          defensiveRebounds: '33',
+          assists: '29',
+          steals: '6',
+          blocks: '4',
+          turnovers: '13',
+          pointsInPaint: '52',
+          fastBreakPoints: '14',
+          turnoverPoints: '15',
+          largestLead: '8',
+          leadChanges: '14',
+        },
+        topPlayers: [
+          {
+            id: '3112335',
+            name: 'Nikola Jokic',
+            shortName: 'N. Jokic',
+            jersey: '15',
+            position: 'C',
+            headshot: 'https://a.espncdn.com/i/headshots/nba/players/full/3112335.png',
+            min: '42',
+            pts: 33,
+            reb: 15,
+            ast: 11,
+            fg: '13-22',
+            threePt: '2-5',
+            ft: '5-6',
+            stl: 2,
+            blk: 1,
+            tov: 3,
+            plusMinus: '+2',
+          },
+          {
+            id: '3936299',
+            name: 'Jamal Murray',
+            shortName: 'J. Murray',
+            jersey: '27',
+            position: 'G',
+            headshot: 'https://a.espncdn.com/i/headshots/nba/players/full/3936299.png',
+            min: '40',
+            pts: 24,
+            reb: 4,
+            ast: 7,
+            fg: '9-20',
+            threePt: '3-9',
+            ft: '3-3',
+            stl: 1,
+            blk: 0,
+            tov: 2,
+            plusMinus: '-3',
+          },
+          {
+            id: '3064290',
+            name: 'Aaron Gordon',
+            shortName: 'A. Gordon',
+            jersey: '32',
+            position: 'F',
+            headshot: 'https://a.espncdn.com/i/headshots/nba/players/full/3064290.png',
+            min: '37',
+            pts: 18,
+            reb: 8,
+            ast: 3,
+            fg: '7-13',
+            threePt: '1-3',
+            ft: '3-4',
+            stl: 1,
+            blk: 2,
+            tov: 1,
+            plusMinus: '-1',
+          },
+        ],
+        injuries: [],
+        lastFiveGames: [],
+      },
+      homeTeam: {
+        teamId: '16',
+        abbreviation: 'MIN',
+        homeAway: 'home',
+        leaders: [],
+        stats: {
+          fgMadeAttempted: '42-85',
+          fieldGoalPct: '49.4',
+          threePtMadeAttempted: '15-37',
+          threePointPct: '40.5',
+          ftMadeAttempted: '17-21',
+          freeThrowPct: '81.0',
+          totalRebounds: '46',
+          offensiveRebounds: '11',
+          defensiveRebounds: '35',
+          assists: '28',
+          steals: '8',
+          blocks: '7',
+          turnovers: '11',
+          pointsInPaint: '48',
+          fastBreakPoints: '19',
+          turnoverPoints: '18',
+          largestLead: '10',
+          leadChanges: '14',
+        },
+        topPlayers: [
+          {
+            id: '4594268',
+            name: 'Anthony Edwards',
+            shortName: 'A. Edwards',
+            jersey: '5',
+            position: 'G',
+            headshot: 'https://a.espncdn.com/i/headshots/nba/players/full/4594268.png',
+            min: '43',
+            pts: 34,
+            reb: 6,
+            ast: 8,
+            fg: '12-24',
+            threePt: '5-11',
+            ft: '5-6',
+            stl: 2,
+            blk: 1,
+            tov: 3,
+            plusMinus: '+8',
+          },
+          {
+            id: '3064514',
+            name: 'Julius Randle',
+            shortName: 'J. Randle',
+            jersey: '30',
+            position: 'F',
+            headshot: 'https://a.espncdn.com/i/headshots/nba/players/full/3064514.png',
+            min: '38',
+            pts: 22,
+            reb: 9,
+            ast: 5,
+            fg: '8-16',
+            threePt: '2-5',
+            ft: '4-5',
+            stl: 0,
+            blk: 0,
+            tov: 2,
+            plusMinus: '+5',
+          },
+          {
+            id: '3032976',
+            name: 'Rudy Gobert',
+            shortName: 'R. Gobert',
+            jersey: '27',
+            position: 'C',
+            headshot: 'https://a.espncdn.com/i/headshots/nba/players/full/3032976.png',
+            min: '36',
+            pts: 14,
+            reb: 14,
+            ast: 2,
+            fg: '6-8',
+            threePt: '0-0',
+            ft: '2-4',
+            stl: 1,
+            blk: 4,
+            tov: 1,
+            plusMinus: '+11',
+          },
+        ],
+        injuries: [],
+        lastFiveGames: [],
+      },
+    },
+  ],
+])
+

@@ -1,8 +1,10 @@
-import React, { useState, memo, useMemo } from 'react'
-import type { NBAEvent } from '../types/nba'
+import React, { useState, useEffect, memo, useMemo } from 'react'
+import type { NBAEvent, NBAGameSummary } from '../types/nba'
+import { fetchNBAGameSummary } from '../services/espnApi'
 import { CourtDiagram } from './CourtDiagram'
 import { WinProbabilityBar } from './WinProbabilityBar'
 import { getScorigamiInfo } from '../utils/scorigami'
+import { isAbortError } from '../utils/errors'
 import {
   safeParseInt,
   isClutchGame,
@@ -38,23 +40,29 @@ function areHeroPropsEqual(prev: HeroMatchupProps, next: HeroMatchupProps): bool
 
 export const HeroMatchup: React.FC<HeroMatchupProps> = memo(({ event, timeZoneMode }) => {
   const [isCopied, setIsCopied] = useState<boolean>(false)
-  const competition = event.competitions[0]
-  if (!competition) return null
+  const [summaryState, setSummaryState] = useState<{
+    eventId: string
+    data: NBAGameSummary | null
+  }>({ eventId: '', data: null })
+  const [isSummaryLoading, setIsSummaryLoading] = useState<boolean>(false)
+
+  const competition = event.competitions?.[0]
+  const hasCompetition = Boolean(competition)
 
   const { status } = event
   const state = status.type?.state || 'in'
   const isLive = state === 'in'
   const isFinal = state === 'post'
   const isUpcoming = state === 'pre' || (!isLive && !isFinal)
-  const situation = competition.situation
+  const situation = competition?.situation
 
-  const competitors = competition.competitors || []
+  const competitors = competition?.competitors || []
   const homeComp = competitors.find((c) => c.homeAway === 'home')
   const awayComp = competitors.find((c) => c.homeAway === 'away')
 
-  const crew = competition.announcingCrew
+  const crew = competition?.announcingCrew
   const isClutch = isClutchGame(status, competitors)
-  const venueText = competition.venue?.fullName
+  const venueText = competition?.venue?.fullName
     ? `${competition.venue.fullName}${competition.venue.address?.city ? `, ${competition.venue.address.city}` : ''}`
     : ''
 
@@ -63,6 +71,45 @@ export const HeroMatchup: React.FC<HeroMatchupProps> = memo(({ event, timeZoneMo
   const awayScore = safeParseInt(awayComp?.score, 0)
   const homeAbbr = homeComp?.team?.abbreviation || 'Home'
   const awayAbbr = awayComp?.team?.abbreviation || 'Away'
+  const homeTeamId = homeComp?.team?.id
+  const awayTeamId = awayComp?.team?.id
+  const shotsLength = competition?.shots?.length ?? 0
+
+  useEffect(() => {
+    if (!event.id || !hasCompetition) return
+    const controller = new AbortController()
+    let active = true
+
+    setIsSummaryLoading(true)
+    fetchNBAGameSummary(event.id, state, controller.signal, {
+      homeTeamId,
+      awayTeamId,
+      homeAbbr,
+      awayAbbr,
+    })
+      .then((data) => {
+        if (!active || controller.signal.aborted) return
+        setSummaryState((prev) => {
+          if (prev.eventId === event.id && data === null && prev.data !== null) {
+            return prev
+          }
+          return { eventId: event.id, data }
+        })
+      })
+      .catch((err: unknown) => {
+        if (!active || controller.signal.aborted || isAbortError(err)) return
+      })
+      .finally(() => {
+        if (active && !controller.signal.aborted) {
+          setIsSummaryLoading(false)
+        }
+      })
+
+    return () => {
+      active = false
+      controller.abort()
+    }
+  }, [event.id, state, homeTeamId, awayTeamId, homeAbbr, awayAbbr, homeScore, awayScore, shotsLength, hasCompetition])
 
   const scorigamiInfo = useMemo(() => {
     return getScorigamiInfo(
@@ -76,8 +123,8 @@ export const HeroMatchup: React.FC<HeroMatchupProps> = memo(({ event, timeZoneMo
   }, [homeScore, awayScore, secondsRemaining, state, homeAbbr, awayAbbr])
 
   const homeSpread = useMemo(() => {
-    return resolveHomeSpread(competition.odds, homeAbbr, awayAbbr)
-  }, [competition.odds, homeAbbr, awayAbbr])
+    return resolveHomeSpread(competition?.odds, homeAbbr, awayAbbr)
+  }, [competition?.odds, homeAbbr, awayAbbr])
 
   const winProb = useMemo(() => {
     return calculateWinProbability(
@@ -98,6 +145,10 @@ export const HeroMatchup: React.FC<HeroMatchupProps> = memo(({ event, timeZoneMo
         : null
     )
   }, [homeScore, awayScore, secondsRemaining, state, homeSpread, situation, homeComp?.team?.id, awayComp?.team?.id, homeComp?.fouls, awayComp?.fouls])
+
+  if (!competition) return null
+
+  const activeSummary = summaryState.eventId === event.id ? summaryState.data : null
 
   const handleCopySnapshot = async () => {
     const awayName = awayComp?.team?.displayName || awayAbbr
@@ -486,9 +537,12 @@ export const HeroMatchup: React.FC<HeroMatchupProps> = memo(({ event, timeZoneMo
         {/* Tactical Basketball Court & Momentum Radar (Full-Width Symmetrical Display) */}
         <div className="rounded-xl border border-white/[0.12] bg-[#080d1a] p-3.5 sm:p-5 shadow-md">
           <CourtDiagram
+            eventId={event.id}
             situation={situation}
             competitors={competitors}
             shots={competition.shots}
+            summary={activeSummary}
+            isSummaryLoading={isSummaryLoading && !activeSummary}
             gameState={state}
             gameStatusDetail={status?.type?.detail}
             isHero={true}

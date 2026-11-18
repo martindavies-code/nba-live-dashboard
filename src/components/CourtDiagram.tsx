@@ -1,13 +1,18 @@
-import React, { useState, useId, memo, useMemo } from 'react'
-import type { NBACompetitor, NBAShot, NBASituation, NBAStatus } from '../types/nba'
+import React, { useState, useId, memo, useMemo, useEffect } from 'react'
+import type { NBACompetitor, NBAShot, NBASituation, NBAStatus, NBAGameSummary } from '../types/nba'
 import { sanitizeHexColor } from '../utils/nbaHelpers'
 import { formatGameKickoff, type TimeZoneMode } from '../utils/timezone.ts'
-import { Flame, Clock, Crosshair, BarChart2, ShieldAlert } from 'lucide-react'
+import { computeShootingZones, extractRecordSummary } from '../utils/matchupStats'
+import { CourtMatchupIntel } from './CourtMatchupIntel'
+import { Flame, Clock, Crosshair, BarChart2, ShieldAlert, ClipboardList, Trophy } from 'lucide-react'
 
 interface CourtDiagramProps {
+  eventId?: string
   situation?: NBASituation | null
   competitors: NBACompetitor[]
   shots?: NBAShot[]
+  summary?: NBAGameSummary | null
+  isSummaryLoading?: boolean
   gameState?: 'pre' | 'in' | 'post'
   gameStatusDetail?: string
   isHero?: boolean
@@ -16,10 +21,19 @@ interface CourtDiagramProps {
   eventDate?: string
 }
 
+type CourtViewMode = 'intel' | 'shots' | 'zones'
+
+function defaultViewModeForState(gameState: string): CourtViewMode {
+  return gameState === 'in' ? 'shots' : 'intel'
+}
+
 export const CourtDiagram: React.FC<CourtDiagramProps> = memo(({
+  eventId,
   situation,
   competitors,
   shots = [],
+  summary,
+  isSummaryLoading = false,
   gameState = 'in',
   gameStatusDetail = 'In Progress',
   isHero = false,
@@ -30,7 +44,14 @@ export const CourtDiagram: React.FC<CourtDiagramProps> = memo(({
   const uniqueId = useId().replace(/:/g, '')
   const [selectedShot, setSelectedShot] = useState<NBAShot | null>(null)
   const [shotFilter, setShotFilter] = useState<'all' | 'makes' | 'misses' | 'home' | 'away'>('all')
-  const [viewMode, setViewMode] = useState<'shots' | 'zones'>('shots')
+  const [viewMode, setViewMode] = useState<CourtViewMode>(() => defaultViewModeForState(gameState))
+
+  // Reset tab & selected shot when switching spotlighted games or game state transitions
+  useEffect(() => {
+    setViewMode(defaultViewModeForState(gameState))
+    setSelectedShot(null)
+    setShotFilter('all')
+  }, [eventId, gameState])
 
   const homeComp = competitors.find((c) => c.homeAway === 'home')
   const awayComp = competitors.find((c) => c.homeAway === 'away')
@@ -41,25 +62,31 @@ export const CourtDiagram: React.FC<CourtDiagramProps> = memo(({
   const homeAbbr = (homeComp?.team?.abbreviation || 'HOME').replace(/[^A-Za-z0-9]/g, '').slice(0, 6) || 'HOME'
   const awayAbbr = (awayComp?.team?.abbreviation || 'AWAY').replace(/[^A-Za-z0-9]/g, '').slice(0, 6) || 'AWAY'
 
+  // Effective shots: prefer competition.shots if provided, otherwise summary.shots
+  const effectiveShots = useMemo(() => {
+    if (Array.isArray(shots) && shots.length > 0) return shots
+    return summary?.shots || []
+  }, [shots, summary?.shots])
+
   // Memoized filtered shots to prevent unnecessary recalculation
   const filteredShots = useMemo(() => {
-    return shots.filter((s) => {
+    return effectiveShots.filter((s) => {
       if (shotFilter === 'makes') return s.made
       if (shotFilter === 'misses') return !s.made
-      if (shotFilter === 'home') return s.teamAbbr === homeAbbr
-      if (shotFilter === 'away') return s.teamAbbr === awayAbbr
+      if (shotFilter === 'home') return s.teamAbbr === homeAbbr || (homeComp?.team?.id && s.teamId === homeComp.team.id)
+      if (shotFilter === 'away') return s.teamAbbr === awayAbbr || (awayComp?.team?.id && s.teamId === awayComp.team.id)
       return true
     })
-  }, [shots, shotFilter, homeAbbr, awayAbbr])
+  }, [effectiveShots, shotFilter, homeAbbr, awayAbbr, homeComp?.team?.id, awayComp?.team?.id])
 
-  // Single-pass shooting summary calculation (avoids 4 intermediate filter passes)
+  // Single-pass shooting summary calculation
   const { totalShots, madeShots, fgPct, threePointersMade, threePointersTotal } = useMemo(() => {
     let made = 0
     let tpMade = 0
     let tpTotal = 0
-    const total = shots.length
+    const total = effectiveShots.length
     for (let i = 0; i < total; i++) {
-      const s = shots[i]
+      const s = effectiveShots[i]
       if (s.made) made++
       if (s.points === 3) {
         tpTotal++
@@ -74,7 +101,9 @@ export const CourtDiagram: React.FC<CourtDiagramProps> = memo(({
       threePointersMade: tpMade,
       threePointersTotal: tpTotal,
     }
-  }, [shots])
+  }, [effectiveShots])
+
+  const zoneSummary = useMemo(() => computeShootingZones(effectiveShots), [effectiveShots])
 
   // Shot clock & fouls
   const shotClock = situation?.shotClock ?? 24
@@ -84,37 +113,63 @@ export const CourtDiagram: React.FC<CourtDiagramProps> = memo(({
   const scoringRun = situation?.scoringRun
   const currentPeriodDetail = status?.type?.detail || gameStatusDetail
 
+  const awayRecords = extractRecordSummary(awayComp, summary?.awayTeam)
+  const homeRecords = extractRecordSummary(homeComp, summary?.homeTeam)
+
+  const awayPostFg =
+    summary?.awayTeam?.stats?.fieldGoalPct ||
+    awayComp?.statistics?.find((s) => s.name === 'fieldGoalPct')?.displayValue
+  const homePostFg =
+    summary?.homeTeam?.stats?.fieldGoalPct ||
+    homeComp?.statistics?.find((s) => s.name === 'fieldGoalPct')?.displayValue
+
   return (
     <div className={`flex flex-col space-y-3.5 w-full ${isHero ? 'hero-court-diagram' : ''}`}>
-      {/* Top Hoops Momentum Banner */}
+      {/* Top Hoops Momentum / Matchup Banner */}
       <div className="flex flex-wrap items-center justify-between gap-2.5 rounded-xl border border-white/[0.15] bg-[#0c1424] p-2.5 sm:p-3 shadow-md backdrop-blur-md">
-        {/* Left: Possession & Scoring Run */}
+        {/* Left: Possession, Tip-Off, or Final Recap Context */}
         <div className="flex flex-wrap items-center gap-2 sm:gap-3 min-w-0">
           <div className="flex items-center gap-1.5 shrink-0">
             <span
-              className="inline-block h-2.5 w-2.5 sm:h-3 sm:w-3 rounded-full animate-pulse shrink-0"
+              className={`inline-block h-2.5 w-2.5 sm:h-3 sm:w-3 rounded-full shrink-0 ${
+                gameState === 'in' ? 'animate-pulse' : ''
+              }`}
               style={{
                 backgroundColor:
                   situation?.possession === homeComp?.team?.id
                     ? homeColor
                     : situation?.possession === awayComp?.team?.id
                     ? awayColor
+                    : gameState === 'post'
+                    ? '#10b981'
                     : '#f97316',
               }}
             />
             <span className="font-mono text-xs sm:text-sm font-bold text-white tracking-wide">
-              {situation?.possessionText ||
-                (gameState === 'in'
-                  ? 'Live Play'
-                  : gameState === 'post'
-                  ? 'Final Shot Chart'
-                  : eventDate
-                  ? `Tip-Off: ${formatGameKickoff(eventDate, timeZoneMode)}`
-                  : currentPeriodDetail)}
+              {gameState === 'in'
+                ? situation?.possessionText || 'Live Play'
+                : gameState === 'post'
+                ? 'Final Game Leaders & Box Score'
+                : eventDate
+                ? `Tip-Off: ${formatGameKickoff(eventDate, timeZoneMode)}`
+                : currentPeriodDetail}
             </span>
           </div>
 
-          {scoringRun && (
+          {gameState === 'pre' && summary?.seasonSeries && (
+            <span className="inline-flex items-center gap-1 rounded bg-sky-500/15 border border-sky-400/35 px-2 py-0.5 text-xs font-semibold text-sky-200">
+              {summary.seasonSeries}
+            </span>
+          )}
+
+          {gameState === 'post' && (summary?.awayTeam?.stats?.leadChanges || summary?.homeTeam?.stats?.leadChanges) && (
+            <span className="inline-flex items-center gap-1 rounded bg-emerald-500/15 border border-emerald-400/35 px-2 py-0.5 text-xs font-semibold text-emerald-200">
+              <Trophy className="h-3 w-3 text-emerald-300 shrink-0" />
+              {summary.awayTeam?.stats?.leadChanges || summary.homeTeam?.stats?.leadChanges} Lead Changes
+            </span>
+          )}
+
+          {gameState === 'in' && scoringRun && (
             <span className="inline-flex items-center gap-1 rounded bg-orange-600/35 border border-orange-500/60 px-2 py-0.5 text-xs font-bold text-orange-100 animate-pulse">
               <Flame className="h-3 w-3 text-orange-400 fill-orange-400 shrink-0" />
               <span>
@@ -124,7 +179,7 @@ export const CourtDiagram: React.FC<CourtDiagramProps> = memo(({
             </span>
           )}
 
-          {isClutch && (
+          {gameState === 'in' && isClutch && (
             <span className="inline-flex items-center gap-1 rounded bg-rose-600/40 border border-rose-500/60 px-2 py-0.5 text-xs font-extrabold text-rose-100 animate-pulse">
               <ShieldAlert className="h-3 w-3 text-rose-300 shrink-0" />
               <span>CLUTCH (≤5 PTS)</span>
@@ -132,72 +187,180 @@ export const CourtDiagram: React.FC<CourtDiagramProps> = memo(({
           )}
         </div>
 
-        {/* Right: Shot Clock & Bonus Indicators */}
+        {/* Right: Contextual Metrics (Live Shot Clock & Fouls vs Pre Records vs Post FG%) */}
         <div className="flex items-center gap-2 sm:gap-3 font-mono text-xs sm:text-sm shrink-0">
-          {/* Shot Clock */}
           {gameState === 'in' && (
-            <div className="flex items-center gap-1.5 bg-black/70 border border-white/[0.15] px-2.5 py-1 rounded-md">
-              <Clock className="h-3 w-3 text-slate-300" />
-              <span className="text-slate-300 text-xs uppercase tracking-wider font-semibold">Shot Clock:</span>
-              <span
-                className={`font-extrabold tabular-nums ${
-                  shotClock <= 5 ? 'text-rose-400 animate-pulse' : 'text-amber-300'
-                }`}
-              >
-                {shotClock}s
+            <>
+              <div className="flex items-center gap-1.5 bg-black/70 border border-white/[0.15] px-2.5 py-1 rounded-md">
+                <Clock className="h-3 w-3 text-slate-300" />
+                <span className="text-slate-300 text-xs uppercase tracking-wider font-semibold">Shot Clock:</span>
+                <span
+                  className={`font-extrabold tabular-nums ${
+                    shotClock <= 5 ? 'text-rose-400 animate-pulse' : 'text-amber-300'
+                  }`}
+                >
+                  {shotClock}s
+                </span>
+              </div>
+
+              <div className="hidden sm:flex items-center gap-2 text-xs">
+                <span className="text-slate-300">
+                  {awayAbbr} Fouls: <strong className="text-white">{awayFouls}</strong>
+                  {awayFouls >= 5 && <span className="ml-1 text-rose-400 font-bold">(BONUS)</span>}
+                </span>
+                <span className="text-slate-500">|</span>
+                <span className="text-slate-300">
+                  {homeAbbr} Fouls: <strong className="text-white">{homeFouls}</strong>
+                  {homeFouls >= 5 && <span className="ml-1 text-rose-400 font-bold">(BONUS)</span>}
+                </span>
+              </div>
+            </>
+          )}
+
+          {gameState === 'pre' && (
+            <div className="hidden sm:flex items-center gap-2 text-xs">
+              <span className="text-slate-300">
+                {awayAbbr}: <strong className="text-white">{awayRecords.overall}</strong>
+                {awayRecords.streak && (
+                  <span className={`ml-1 font-bold ${awayRecords.streak.startsWith('W') ? 'text-emerald-300' : 'text-rose-300'}`}>
+                    ({awayRecords.streak})
+                  </span>
+                )}
+              </span>
+              <span className="text-slate-500">|</span>
+              <span className="text-slate-300">
+                {homeAbbr}: <strong className="text-white">{homeRecords.overall}</strong>
+                {homeRecords.streak && (
+                  <span className={`ml-1 font-bold ${homeRecords.streak.startsWith('W') ? 'text-emerald-300' : 'text-rose-300'}`}>
+                    ({homeRecords.streak})
+                  </span>
+                )}
               </span>
             </div>
           )}
 
-          {/* Team Fouls & Bonus */}
-          <div className="hidden sm:flex items-center gap-2 text-xs">
-            <span className="text-slate-300">
-              {awayAbbr} Fouls: <strong className="text-white">{awayFouls}</strong>
-              {awayFouls >= 5 && <span className="ml-1 text-rose-400 font-bold">(BONUS)</span>}
-            </span>
-            <span className="text-slate-500">|</span>
-            <span className="text-slate-300">
-              {homeAbbr} Fouls: <strong className="text-white">{homeFouls}</strong>
-              {homeFouls >= 5 && <span className="ml-1 text-rose-400 font-bold">(BONUS)</span>}
-            </span>
-          </div>
+          {gameState === 'post' && (
+            <div className="hidden sm:flex items-center gap-2 text-xs">
+              {awayPostFg && homePostFg ? (
+                <>
+                  <span className="text-slate-300">
+                    {awayAbbr} FG: <strong className="text-white">{awayPostFg}%</strong>
+                  </span>
+                  <span className="text-slate-500">|</span>
+                  <span className="text-slate-300">
+                    {homeAbbr} FG: <strong className="text-white">{homePostFg}%</strong>
+                  </span>
+                </>
+              ) : (
+                <span className="text-slate-300">
+                  Final: <strong className="text-white">{awayAbbr} {awayComp?.score ?? 0}</strong> –{' '}
+                  <strong className="text-white">{homeAbbr} {homeComp?.score ?? 0}</strong>
+                </span>
+              )}
+            </div>
+          )}
         </div>
       </div>
 
-      {/* Interactive Court SVG Visualizer */}
+      {/* Interactive Court & Matchup Intelligence Container */}
       <div className="relative rounded-xl border border-white/[0.15] bg-[#080d1a] p-3 sm:p-4 overflow-hidden shadow-xl">
-        {/* Court Controls Bar */}
+        {/* Controls & Mode Bar */}
         <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
-          {/* View Mode Toggle: Shots vs Zones */}
-          <div className="flex items-center rounded-lg bg-black/60 border border-white/[0.12] p-0.5 text-xs">
-            <button
-              onClick={() => setViewMode('shots')}
-              className={`flex items-center gap-1 px-2.5 py-1 rounded font-semibold transition-colors ${
-                viewMode === 'shots'
-                  ? 'bg-sky-500/30 text-sky-100 border border-sky-400/50'
-                  : 'text-slate-300 hover:text-white'
-              }`}
-            >
-              <Crosshair className="h-3 w-3" />
-              Live Shot Chart
-            </button>
-            <button
-              onClick={() => setViewMode('zones')}
-              className={`flex items-center gap-1 px-2.5 py-1 rounded font-semibold transition-colors ${
-                viewMode === 'zones'
-                  ? 'bg-sky-500/25 text-sky-200 border border-sky-400/30'
-                  : 'text-slate-400 hover:text-white'
-              }`}
-            >
-              <BarChart2 className="h-3 w-3" />
-              Shooting Zones
-            </button>
-          </div>
+          {/* Left: View Mode Tabs (tailored per gameState) */}
+          {gameState === 'pre' ? (
+            <div className="flex items-center gap-2">
+              <span className="inline-flex items-center gap-1.5 rounded-lg bg-sky-500/20 border border-sky-400/40 px-2.5 py-1 text-xs font-bold text-sky-100">
+                <ClipboardList className="h-3.5 w-3.5 text-sky-300" />
+                Pre-Game Scouting & Season Leaders
+              </span>
+            </div>
+          ) : (
+            <div className="flex items-center rounded-lg bg-black/60 border border-white/[0.12] p-0.5 text-xs overflow-x-auto no-scrollbar">
+              {gameState === 'post' ? (
+                <>
+                  <button
+                    onClick={() => setViewMode('intel')}
+                    className={`flex items-center gap-1 px-2 sm:px-2.5 py-1 rounded font-semibold transition-colors shrink-0 ${
+                      viewMode === 'intel'
+                        ? 'bg-sky-500/30 text-sky-100 border border-sky-400/50'
+                        : 'text-slate-300 hover:text-white'
+                    }`}
+                  >
+                    <ClipboardList className="h-3 w-3 shrink-0" />
+                    <span className="hidden sm:inline">Game Leaders & Stats</span>
+                    <span className="sm:hidden">Leaders & Stats</span>
+                  </button>
+                  <button
+                    onClick={() => setViewMode('shots')}
+                    className={`flex items-center gap-1 px-2 sm:px-2.5 py-1 rounded font-semibold transition-colors shrink-0 ${
+                      viewMode === 'shots'
+                        ? 'bg-sky-500/30 text-sky-100 border border-sky-400/50'
+                        : 'text-slate-300 hover:text-white'
+                    }`}
+                  >
+                    <Crosshair className="h-3 w-3 shrink-0" />
+                    <span className="hidden sm:inline">Shot Chart {effectiveShots.length > 0 ? `(${effectiveShots.length})` : ''}</span>
+                    <span className="sm:hidden">Shots {effectiveShots.length > 0 ? `(${effectiveShots.length})` : ''}</span>
+                  </button>
+                  <button
+                    onClick={() => setViewMode('zones')}
+                    className={`flex items-center gap-1 px-2 sm:px-2.5 py-1 rounded font-semibold transition-colors shrink-0 ${
+                      viewMode === 'zones'
+                        ? 'bg-sky-500/25 text-sky-200 border border-sky-400/30'
+                        : 'text-slate-400 hover:text-white'
+                    }`}
+                  >
+                    <BarChart2 className="h-3 w-3 shrink-0" />
+                    <span className="hidden sm:inline">Shooting Zones</span>
+                    <span className="sm:hidden">Zones</span>
+                  </button>
+                </>
+              ) : (
+                <>
+                  <button
+                    onClick={() => setViewMode('shots')}
+                    className={`flex items-center gap-1 px-2 sm:px-2.5 py-1 rounded font-semibold transition-colors shrink-0 ${
+                      viewMode === 'shots'
+                        ? 'bg-sky-500/30 text-sky-100 border border-sky-400/50'
+                        : 'text-slate-300 hover:text-white'
+                    }`}
+                  >
+                    <Crosshair className="h-3 w-3 shrink-0" />
+                    <span className="hidden sm:inline">Live Shot Chart</span>
+                    <span className="sm:hidden">Shot Chart</span>
+                  </button>
+                  <button
+                    onClick={() => setViewMode('zones')}
+                    className={`flex items-center gap-1 px-2 sm:px-2.5 py-1 rounded font-semibold transition-colors shrink-0 ${
+                      viewMode === 'zones'
+                        ? 'bg-sky-500/25 text-sky-200 border border-sky-400/30'
+                        : 'text-slate-400 hover:text-white'
+                    }`}
+                  >
+                    <BarChart2 className="h-3 w-3 shrink-0" />
+                    <span className="hidden sm:inline">Shooting Zones</span>
+                    <span className="sm:hidden">Zones</span>
+                  </button>
+                  <button
+                    onClick={() => setViewMode('intel')}
+                    className={`flex items-center gap-1 px-2 sm:px-2.5 py-1 rounded font-semibold transition-colors shrink-0 ${
+                      viewMode === 'intel'
+                        ? 'bg-sky-500/30 text-sky-100 border border-sky-400/50'
+                        : 'text-slate-300 hover:text-white'
+                    }`}
+                  >
+                    <ClipboardList className="h-3 w-3 shrink-0" />
+                    <span>Box Leaders</span>
+                  </button>
+                </>
+              )}
+            </div>
+          )}
 
-          {/* Shot Filters (Only in Shots Mode) */}
-          {viewMode === 'shots' && (
+          {/* Middle: Shot Filters (Only in Shots Mode) */}
+          {viewMode === 'shots' && gameState !== 'pre' && (
             <div className="flex items-center gap-1 text-[11px]">
-              {(['all', 'makes', 'misses', 'home', 'away'] as const).map((filterKey) => (
+              {(['all', 'makes', 'misses', 'away', 'home'] as const).map((filterKey) => (
                 <button
                   key={filterKey}
                   onClick={() => setShotFilter(filterKey)}
@@ -213,391 +376,443 @@ export const CourtDiagram: React.FC<CourtDiagramProps> = memo(({
             </div>
           )}
 
-          {/* Quick Stats Pill */}
-          <div className="flex items-center gap-2 font-mono text-[11px] text-slate-300">
-            <span>FG: <strong className="text-emerald-400">{fgPct}%</strong> ({madeShots}/{totalShots})</span>
-            <span className="text-slate-600">|</span>
-            <span>3PT: <strong className="text-sky-400">{threePointersMade}/{threePointersTotal}</strong></span>
-          </div>
+          {/* Right: Contextual Summary Pill */}
+          {gameState === 'pre' ? (
+            <div className="flex items-center gap-2 font-mono text-[11px] text-slate-300">
+              {summary?.predictor ? (
+                <span>
+                  Matchup Model:{' '}
+                  <strong className="text-white">{awayAbbr} {summary.predictor.awayWinPct.toFixed(0)}%</strong>
+                  <span className="text-slate-500 mx-1">/</span>
+                  <strong className="text-white">{homeAbbr} {summary.predictor.homeWinPct.toFixed(0)}%</strong>
+                </span>
+              ) : (
+                <span>Season Leaders & Team Splits</span>
+              )}
+            </div>
+          ) : viewMode === 'intel' ? (
+            <div className="flex items-center gap-2 font-mono text-[11px] text-slate-300">
+              <span>
+                {awayAbbr}: <strong className="text-white">{awayComp?.score ?? '-'}</strong>
+              </span>
+              <span className="text-slate-600">|</span>
+              <span>
+                {homeAbbr}: <strong className="text-white">{homeComp?.score ?? '-'}</strong>
+              </span>
+            </div>
+          ) : (
+            <div className="flex items-center gap-2 font-mono text-[11px] text-slate-300">
+              <span>
+                FG: <strong className="text-emerald-400">{fgPct}%</strong> ({madeShots}/{totalShots})
+              </span>
+              <span className="text-slate-600">|</span>
+              <span>
+                3PT: <strong className="text-sky-400">{threePointersMade}/{threePointersTotal}</strong>
+              </span>
+            </div>
+          )}
         </div>
 
-        {/* Tactical Hardwood Court SVG (Full Court 94' x 50' aspect ratio: 940 x 500) */}
-        <div className="relative w-full aspect-[940/500] max-h-[460px] select-none">
-          <svg
-            viewBox="0 0 940 500"
-            className="w-full h-full rounded-xl overflow-hidden drop-shadow-2xl"
-            xmlns="http://www.w3.org/2000/svg"
-          >
-            <defs>
-              {/* Hardwood Grain Pattern */}
-              <pattern
-                id={`hardwood-${uniqueId}`}
-                width="40"
-                height="10"
-                patternUnits="userSpaceOnUse"
+        {/* Main Content: Pre-game / Post-game Intel Board OR Hardwood SVG Court */}
+        {viewMode === 'intel' || gameState === 'pre' ? (
+          <CourtMatchupIntel
+            awayComp={awayComp}
+            homeComp={homeComp}
+            summary={summary}
+            gameState={gameState}
+            isSummaryLoading={isSummaryLoading}
+          />
+        ) : (
+          <>
+            {/* Tactical Hardwood Court SVG (Full Court 94' x 50' aspect ratio: 940 x 500) */}
+            <div className="relative w-full aspect-[940/500] max-h-[460px] select-none">
+              <svg
+                viewBox="0 0 940 500"
+                className="w-full h-full rounded-xl overflow-hidden drop-shadow-2xl"
+                xmlns="http://www.w3.org/2000/svg"
               >
-                <rect width="40" height="10" fill="#a46830" />
-                <line x1="0" y1="0" x2="40" y2="0" stroke="#874f1d" strokeWidth="0.8" />
-                <line x1="20" y1="0" x2="20" y2="10" stroke="#874f1d" strokeWidth="0.5" />
-              </pattern>
-
-              {/* Court Gloss Gradient */}
-              <linearGradient id={`court-gloss-${uniqueId}`} x1="0%" y1="0%" x2="100%" y2="100%">
-                <stop offset="0%" stopColor="#d4954d" stopOpacity="0.9" />
-                <stop offset="50%" stopColor="#b87b38" stopOpacity="0.95" />
-                <stop offset="100%" stopColor="#9a5f22" stopOpacity="0.9" />
-              </linearGradient>
-
-              {/* Glowing Rim Drop Shadow */}
-              <filter id={`glow-${uniqueId}`} x="-20%" y="-20%" width="140%" height="140%">
-                <feGaussianBlur stdDeviation="3" result="blur" />
-                <feComposite in="SourceGraphic" in2="blur" operator="over" />
-              </filter>
-            </defs>
-
-            {/* Base Court Surface */}
-            <rect x="0" y="0" width="940" height="500" fill={`url(#hardwood-${uniqueId})`} />
-            <rect x="0" y="0" width="940" height="500" fill={`url(#court-gloss-${uniqueId})`} opacity="0.65" />
-
-            {/* Boundary Lines (2 inches wide regulation) */}
-            <rect
-              x="20"
-              y="20"
-              width="900"
-              height="460"
-              fill="none"
-              stroke="#ffffff"
-              strokeWidth="4"
-              strokeOpacity="0.9"
-            />
-
-            {/* Mid-Court Division Line */}
-            <line
-              x1="470"
-              y1="20"
-              x2="470"
-              y2="480"
-              stroke="#ffffff"
-              strokeWidth="4"
-              strokeOpacity="0.9"
-            />
-
-            {/* Center Jump Circle (Radius 60 units = 6ft) */}
-            <circle
-              cx="470"
-              cy="250"
-              r="60"
-              fill="none"
-              stroke="#ffffff"
-              strokeWidth="4"
-              strokeOpacity="0.9"
-            />
-            {/* Center Outer Circle (Radius 20 units) */}
-            <circle
-              cx="470"
-              cy="250"
-              r="20"
-              fill="none"
-              stroke="#ffffff"
-              strokeWidth="2"
-              strokeDasharray="6 6"
-              strokeOpacity="0.7"
-            />
-
-            {/* Center Court Logo Silhouette */}
-            <g transform="translate(435, 215) scale(1.4)" opacity="0.4">
-              <circle cx="25" cy="25" r="24" fill="none" stroke="#ffffff" strokeWidth="2" />
-              <path d="M 1,25 L 49,25 M 25,1 L 25,49 M 7,7 C 18,18 32,32 43,43 M 7,43 C 18,32 32,18 43,7" stroke="#ffffff" strokeWidth="1.8" fill="none" />
-            </g>
-
-            {/* ---------------- LEFT BASKET (AWAY DEFENSE / HOME ATTACK) ---------------- */}
-            {/* Painted Key / Lane (19ft x 16ft = 190 x 160 units) */}
-            <rect
-              x="20"
-              y="170"
-              width="190"
-              height="160"
-              fill={awayColor}
-              fillOpacity="0.45"
-              stroke="#ffffff"
-              strokeWidth="3"
-            />
-
-            {/* Free Throw Circle */}
-            <path
-              d="M 210,170 A 60,60 0 0,1 210,330"
-              fill="none"
-              stroke="#ffffff"
-              strokeWidth="3"
-            />
-            <path
-              d="M 210,330 A 60,60 0 0,1 210,170"
-              fill="none"
-              stroke="#ffffff"
-              strokeWidth="3"
-              strokeDasharray="8 8"
-            />
-
-            {/* 3-Point Arc Left (Radius 237.5 units = 23'9", Corner lines 22ft) */}
-            <path
-              d="M 20,50 L 140,50 A 237.5,237.5 0 0,1 140,450 L 20,450"
-              fill="none"
-              stroke="#ffffff"
-              strokeWidth="3.5"
-              strokeOpacity="0.9"
-            />
-
-            {/* Restricted Area Arc Left (4ft radius = 40 units) */}
-            <path
-              d="M 60,210 A 40,40 0 0,1 60,290"
-              fill="none"
-              stroke="#ffffff"
-              strokeWidth="2.5"
-            />
-
-            {/* Backboard & Rim Left */}
-            <line x1="60" y1="220" x2="60" y2="280" stroke="#ffffff" strokeWidth="5" />
-            <circle cx="75" cy="250" r="9" fill="none" stroke="#f97316" strokeWidth="3" filter={`url(#glow-${uniqueId})`} />
-            <circle cx="75" cy="250" r="3" fill="#ffffff" />
-
-            {/* Baseline Team Wordmark Left */}
-            <text
-              x="30"
-              y="255"
-              fontSize="18"
-              fontWeight="900"
-              fontFamily="Oswald"
-              fill="#ffffff"
-              fillOpacity="0.75"
-              transform="rotate(-90 30 255)"
-              textAnchor="middle"
-              letterSpacing="3"
-            >
-              {awayAbbr}
-            </text>
-            <text
-              x="120"
-              y="42"
-              fontSize="12"
-              fontWeight="bold"
-              fontFamily="sans-serif"
-              fill="#ffffff"
-              fillOpacity="0.9"
-              textAnchor="middle"
-            >
-              {awayAbbr} BASKET
-            </text>
-
-            {/* ---------------- RIGHT BASKET (HOME DEFENSE / AWAY ATTACK) ---------------- */}
-            {/* Painted Key / Lane Right */}
-            <rect
-              x="730"
-              y="170"
-              width="190"
-              height="160"
-              fill={homeColor}
-              fillOpacity="0.45"
-              stroke="#ffffff"
-              strokeWidth="3"
-            />
-
-            {/* Free Throw Circle Right */}
-            <path
-              d="M 730,170 A 60,60 0 0,0 730,330"
-              fill="none"
-              stroke="#ffffff"
-              strokeWidth="3"
-            />
-            <path
-              d="M 730,330 A 60,60 0 0,0 730,170"
-              fill="none"
-              stroke="#ffffff"
-              strokeWidth="3"
-              strokeDasharray="8 8"
-            />
-
-            {/* 3-Point Arc Right */}
-            <path
-              d="M 920,50 L 800,50 A 237.5,237.5 0 0,0 800,450 L 920,450"
-              fill="none"
-              stroke="#ffffff"
-              strokeWidth="3.5"
-              strokeOpacity="0.9"
-            />
-
-            {/* Restricted Area Arc Right */}
-            <path
-              d="M 880,210 A 40,40 0 0,0 880,290"
-              fill="none"
-              stroke="#ffffff"
-              strokeWidth="2.5"
-            />
-
-            {/* Backboard & Rim Right */}
-            <line x1="880" y1="220" x2="880" y2="280" stroke="#ffffff" strokeWidth="5" />
-            <circle cx="865" cy="250" r="9" fill="none" stroke="#f97316" strokeWidth="3" filter={`url(#glow-${uniqueId})`} />
-            <circle cx="865" cy="250" r="3" fill="#ffffff" />
-
-            {/* Baseline Team Wordmark Right */}
-            <text
-              x="910"
-              y="255"
-              fontSize="18"
-              fontWeight="900"
-              fontFamily="Oswald"
-              fill="#ffffff"
-              fillOpacity="0.75"
-              transform="rotate(90 910 255)"
-              textAnchor="middle"
-              letterSpacing="3"
-            >
-              {homeAbbr}
-            </text>
-            <text
-              x="820"
-              y="42"
-              fontSize="12"
-              fontWeight="bold"
-              fontFamily="sans-serif"
-              fill="#ffffff"
-              fillOpacity="0.9"
-              textAnchor="middle"
-            >
-              {homeAbbr} BASKET
-            </text>
-
-            {/* ---------------- ZONE HEATMAP OVERLAY (IF VIEWMODE === 'ZONES') ---------------- */}
-            {viewMode === 'zones' && (
-              <g opacity="0.85">
-                {/* Paint Zone */}
-                <rect x="730" y="170" width="190" height="160" fill="#10b981" fillOpacity="0.25" stroke="#10b981" strokeWidth="1" strokeDasharray="4 4" />
-                <text x="825" y="255" fill="#ffffff" fontSize="13" fontWeight="bold" fontFamily="JetBrains Mono" textAnchor="middle">
-                  PAINT: 64.2% FG
-                </text>
-
-                {/* Left Corner 3 */}
-                <rect x="800" y="20" width="120" height="40" fill="#3b82f6" fillOpacity="0.25" stroke="#3b82f6" strokeWidth="1" strokeDasharray="4 4" />
-                <text x="860" y="45" fill="#ffffff" fontSize="11" fontWeight="bold" fontFamily="JetBrains Mono" textAnchor="middle">
-                  CORNER: 41.7%
-                </text>
-
-                {/* Right Corner 3 */}
-                <rect x="800" y="440" width="120" height="40" fill="#3b82f6" fillOpacity="0.25" stroke="#3b82f6" strokeWidth="1" strokeDasharray="4 4" />
-                <text x="860" y="465" fill="#ffffff" fontSize="11" fontWeight="bold" fontFamily="JetBrains Mono" textAnchor="middle">
-                  CORNER: 38.5%
-                </text>
-
-                {/* Above Break 3 */}
-                <text x="690" y="110" fill="#ffffff" fontSize="12" fontWeight="bold" fontFamily="JetBrains Mono" textAnchor="middle">
-                  ABOVE BREAK: 37.1%
-                </text>
-                <text x="690" y="390" fill="#ffffff" fontSize="12" fontWeight="bold" fontFamily="JetBrains Mono" textAnchor="middle">
-                  ABOVE BREAK: 36.4%
-                </text>
-
-                {/* Mid-Range */}
-                <text x="760" y="130" fill="#ffffff" fontSize="11" fontWeight="bold" fontFamily="JetBrains Mono" textAnchor="middle">
-                  MID: 43.8%
-                </text>
-                <text x="760" y="370" fill="#ffffff" fontSize="11" fontWeight="bold" fontFamily="JetBrains Mono" textAnchor="middle">
-                  MID: 40.5%
-                </text>
-              </g>
-            )}
-
-            {/* ---------------- LIVE SHOT PLOTS (IF VIEWMODE === 'SHOTS') ---------------- */}
-            {viewMode === 'shots' &&
-              filteredShots.map((shot) => {
-                // Scale coordinate to SVG viewBox (0..94 -> 0..940, 0..50 -> 0..500)
-                const cx = Math.max(0, Math.min(940, (Number.isFinite(shot.x) ? shot.x : 47) * 10))
-                const cy = Math.max(0, Math.min(500, (Number.isFinite(shot.y) ? shot.y : 25) * 10))
-                const isSelected = selectedShot?.id === shot.id
-
-                return (
-                  <g
-                    key={shot.id}
-                    className="cursor-pointer transition-transform hover:scale-125"
-                    onClick={() => setSelectedShot(shot)}
+                <defs>
+                  {/* Hardwood Grain Pattern */}
+                  <pattern
+                    id={`hardwood-${uniqueId}`}
+                    width="40"
+                    height="10"
+                    patternUnits="userSpaceOnUse"
                   >
-                    {/* Pulsing ring if selected */}
-                    {isSelected && (
-                      <circle
-                        cx={cx}
-                        cy={cy}
-                        r="14"
-                        fill="none"
-                        stroke="#38bdf8"
-                        strokeWidth="2.5"
-                        className="animate-ping"
-                      />
-                    )}
+                    <rect width="40" height="10" fill="#a46830" />
+                    <line x1="0" y1="0" x2="40" y2="0" stroke="#874f1d" strokeWidth="0.8" />
+                    <line x1="20" y1="0" x2="20" y2="10" stroke="#874f1d" strokeWidth="0.5" />
+                  </pattern>
 
-                    {shot.made ? (
-                      // Made Shot: Glowing Green Marker with 3PT badge
-                      <g>
-                        <circle
-                          cx={cx}
-                          cy={cy}
-                          r={shot.points === 3 ? '8' : '6.5'}
-                          fill="#10b981"
-                          stroke="#ffffff"
-                          strokeWidth="1.5"
-                          filter={`url(#glow-${uniqueId})`}
-                        />
-                        {shot.points === 3 && (
-                          <text
-                            x={cx}
-                            y={cy + 3}
-                            fontSize="8"
-                            fontWeight="900"
-                            fontFamily="JetBrains Mono"
-                            fill="#ffffff"
-                            textAnchor="middle"
-                          >
-                            3
-                          </text>
+                  {/* Court Gloss Gradient */}
+                  <linearGradient id={`court-gloss-${uniqueId}`} x1="0%" y1="0%" x2="100%" y2="100%">
+                    <stop offset="0%" stopColor="#d4954d" stopOpacity="0.9" />
+                    <stop offset="50%" stopColor="#b87b38" stopOpacity="0.95" />
+                    <stop offset="100%" stopColor="#9a5f22" stopOpacity="0.9" />
+                  </linearGradient>
+
+                  {/* Glowing Rim Drop Shadow */}
+                  <filter id={`glow-${uniqueId}`} x="-20%" y="-20%" width="140%" height="140%">
+                    <feGaussianBlur stdDeviation="3" result="blur" />
+                    <feComposite in="SourceGraphic" in2="blur" operator="over" />
+                  </filter>
+                </defs>
+
+                {/* Base Court Surface */}
+                <rect x="0" y="0" width="940" height="500" fill={`url(#hardwood-${uniqueId})`} />
+                <rect x="0" y="0" width="940" height="500" fill={`url(#court-gloss-${uniqueId})`} opacity="0.65" />
+
+                {/* Boundary Lines (2 inches wide regulation) */}
+                <rect
+                  x="20"
+                  y="20"
+                  width="900"
+                  height="460"
+                  fill="none"
+                  stroke="#ffffff"
+                  strokeWidth="4"
+                  strokeOpacity="0.9"
+                />
+
+                {/* Mid-Court Division Line */}
+                <line
+                  x1="470"
+                  y1="20"
+                  x2="470"
+                  y2="480"
+                  stroke="#ffffff"
+                  strokeWidth="4"
+                  strokeOpacity="0.9"
+                />
+
+                {/* Center Jump Circle (Radius 60 units = 6ft) */}
+                <circle
+                  cx="470"
+                  cy="250"
+                  r="60"
+                  fill="none"
+                  stroke="#ffffff"
+                  strokeWidth="4"
+                  strokeOpacity="0.9"
+                />
+                {/* Center Outer Circle (Radius 20 units) */}
+                <circle
+                  cx="470"
+                  cy="250"
+                  r="20"
+                  fill="none"
+                  stroke="#ffffff"
+                  strokeWidth="2"
+                  strokeDasharray="6 6"
+                  strokeOpacity="0.7"
+                />
+
+                {/* Center Court Logo Silhouette */}
+                <g transform="translate(435, 215) scale(1.4)" opacity="0.4">
+                  <circle cx="25" cy="25" r="24" fill="none" stroke="#ffffff" strokeWidth="2" />
+                  <path
+                    d="M 1,25 L 49,25 M 25,1 L 25,49 M 7,7 C 18,18 32,32 43,43 M 7,43 C 18,32 32,18 43,7"
+                    stroke="#ffffff"
+                    strokeWidth="1.8"
+                    fill="none"
+                  />
+                </g>
+
+                {/* ---------------- LEFT BASKET (AWAY DEFENSE / HOME ATTACK) ---------------- */}
+                <rect
+                  x="20"
+                  y="170"
+                  width="190"
+                  height="160"
+                  fill={awayColor}
+                  fillOpacity="0.45"
+                  stroke="#ffffff"
+                  strokeWidth="3"
+                />
+                <path d="M 210,170 A 60,60 0 0,1 210,330" fill="none" stroke="#ffffff" strokeWidth="3" />
+                <path
+                  d="M 210,330 A 60,60 0 0,1 210,170"
+                  fill="none"
+                  stroke="#ffffff"
+                  strokeWidth="3"
+                  strokeDasharray="8 8"
+                />
+                <path
+                  d="M 20,50 L 140,50 A 237.5,237.5 0 0,1 140,450 L 20,450"
+                  fill="none"
+                  stroke="#ffffff"
+                  strokeWidth="3.5"
+                  strokeOpacity="0.9"
+                />
+                <path d="M 60,210 A 40,40 0 0,1 60,290" fill="none" stroke="#ffffff" strokeWidth="2.5" />
+                <line x1="60" y1="220" x2="60" y2="280" stroke="#ffffff" strokeWidth="5" />
+                <circle
+                  cx="75"
+                  cy="250"
+                  r="9"
+                  fill="none"
+                  stroke="#f97316"
+                  strokeWidth="3"
+                  filter={`url(#glow-${uniqueId})`}
+                />
+                <circle cx="75" cy="250" r="3" fill="#ffffff" />
+                <text
+                  x="30"
+                  y="255"
+                  fontSize="18"
+                  fontWeight="900"
+                  fontFamily="Oswald"
+                  fill="#ffffff"
+                  fillOpacity="0.75"
+                  transform="rotate(-90 30 255)"
+                  textAnchor="middle"
+                  letterSpacing="3"
+                >
+                  {awayAbbr}
+                </text>
+                {viewMode !== 'zones' && (
+                  <text
+                    x="120"
+                    y="42"
+                    fontSize="12"
+                    fontWeight="bold"
+                    fontFamily="sans-serif"
+                    fill="#ffffff"
+                    fillOpacity="0.9"
+                    textAnchor="middle"
+                  >
+                    {awayAbbr} BASKET
+                  </text>
+                )}
+
+                {/* ---------------- RIGHT BASKET (HOME DEFENSE / AWAY ATTACK) ---------------- */}
+                <rect
+                  x="730"
+                  y="170"
+                  width="190"
+                  height="160"
+                  fill={homeColor}
+                  fillOpacity="0.45"
+                  stroke="#ffffff"
+                  strokeWidth="3"
+                />
+                <path d="M 730,170 A 60,60 0 0,0 730,330" fill="none" stroke="#ffffff" strokeWidth="3" />
+                <path
+                  d="M 730,330 A 60,60 0 0,0 730,170"
+                  fill="none"
+                  stroke="#ffffff"
+                  strokeWidth="3"
+                  strokeDasharray="8 8"
+                />
+                <path
+                  d="M 920,50 L 800,50 A 237.5,237.5 0 0,0 800,450 L 920,450"
+                  fill="none"
+                  stroke="#ffffff"
+                  strokeWidth="3.5"
+                  strokeOpacity="0.9"
+                />
+                <path d="M 880,210 A 40,40 0 0,0 880,290" fill="none" stroke="#ffffff" strokeWidth="2.5" />
+                <line x1="880" y1="220" x2="880" y2="280" stroke="#ffffff" strokeWidth="5" />
+                <circle
+                  cx="865"
+                  cy="250"
+                  r="9"
+                  fill="none"
+                  stroke="#f97316"
+                  strokeWidth="3"
+                  filter={`url(#glow-${uniqueId})`}
+                />
+                <circle cx="865" cy="250" r="3" fill="#ffffff" />
+                <text
+                  x="910"
+                  y="255"
+                  fontSize="18"
+                  fontWeight="900"
+                  fontFamily="Oswald"
+                  fill="#ffffff"
+                  fillOpacity="0.75"
+                  transform="rotate(90 910 255)"
+                  textAnchor="middle"
+                  letterSpacing="3"
+                >
+                  {homeAbbr}
+                </text>
+                {viewMode !== 'zones' && (
+                  <text
+                    x="820"
+                    y="42"
+                    fontSize="12"
+                    fontWeight="bold"
+                    fontFamily="sans-serif"
+                    fill="#ffffff"
+                    fillOpacity="0.9"
+                    textAnchor="middle"
+                  >
+                    {homeAbbr} BASKET
+                  </text>
+                )}
+
+                {/* ---------------- ZONE HEATMAP OVERLAY (COMPUTED FROM REAL SHOTS) ---------------- */}
+                {viewMode === 'zones' && (
+                  <g opacity="0.92">
+                    <rect
+                      x="730"
+                      y="170"
+                      width="190"
+                      height="160"
+                      fill="#060b14"
+                      fillOpacity="0.65"
+                      stroke="#10b981"
+                      strokeWidth="1.5"
+                      strokeDasharray="4 4"
+                    />
+                    <text x="825" y="246" fill="#ffffff" fontSize="13" fontWeight="bold" fontFamily="JetBrains Mono" textAnchor="middle">
+                      PAINT: {zoneSummary.paint.pct}
+                    </text>
+                    <text x="825" y="264" fill="#cbd5e1" fontSize="11" fontFamily="JetBrains Mono" textAnchor="middle">
+                      ({zoneSummary.paint.made}/{zoneSummary.paint.total})
+                    </text>
+
+                    <rect
+                      x="782"
+                      y="24"
+                      width="136"
+                      height="36"
+                      rx="4"
+                      fill="#060b14"
+                      fillOpacity="0.7"
+                      stroke="#3b82f6"
+                      strokeWidth="1"
+                    />
+                    <text x="850" y="46" fill="#ffffff" fontSize="10.5" fontWeight="bold" fontFamily="JetBrains Mono" textAnchor="middle">
+                      CORNER 3: {zoneSummary.corner3.pct}
+                    </text>
+
+                    <rect
+                      x="587"
+                      y="92"
+                      width="206"
+                      height="38"
+                      rx="4"
+                      fill="#060b14"
+                      fillOpacity="0.7"
+                      stroke="#38bdf8"
+                      strokeWidth="1"
+                    />
+                    <text x="690" y="115" fill="#ffffff" fontSize="10.5" fontWeight="bold" fontFamily="JetBrains Mono" textAnchor="middle">
+                      3PT BREAK: {zoneSummary.aboveBreak3.pct} ({zoneSummary.aboveBreak3.made}/{zoneSummary.aboveBreak3.total})
+                    </text>
+
+                    <rect
+                      x="587"
+                      y="372"
+                      width="206"
+                      height="38"
+                      rx="4"
+                      fill="#060b14"
+                      fillOpacity="0.7"
+                      stroke="#f59e0b"
+                      strokeWidth="1"
+                    />
+                    <text x="690" y="395" fill="#ffffff" fontSize="10.5" fontWeight="bold" fontFamily="JetBrains Mono" textAnchor="middle">
+                      MID-RANGE: {zoneSummary.midRange.pct} ({zoneSummary.midRange.made}/{zoneSummary.midRange.total})
+                    </text>
+                  </g>
+                )}
+
+                {/* ---------------- LIVE / POST SHOT PLOTS ---------------- */}
+                {viewMode === 'shots' &&
+                  filteredShots.map((shot) => {
+                    const cx = Math.max(0, Math.min(940, (Number.isFinite(shot.x) ? shot.x : 47) * 10))
+                    const cy = Math.max(0, Math.min(500, (Number.isFinite(shot.y) ? shot.y : 25) * 10))
+                    const isSelected = selectedShot?.id === shot.id
+
+                    return (
+                      <g
+                        key={shot.id}
+                        className="cursor-pointer transition-transform hover:scale-125"
+                        onClick={() => setSelectedShot(shot)}
+                      >
+                        {isSelected && (
+                          <circle
+                            cx={cx}
+                            cy={cy}
+                            r="14"
+                            fill="none"
+                            stroke="#38bdf8"
+                            strokeWidth="2.5"
+                            className="animate-ping"
+                          />
+                        )}
+
+                        {shot.made ? (
+                          <g>
+                            <circle
+                              cx={cx}
+                              cy={cy}
+                              r={shot.points === 3 ? '8' : '6.5'}
+                              fill="#10b981"
+                              stroke="#ffffff"
+                              strokeWidth="1.5"
+                              filter={`url(#glow-${uniqueId})`}
+                            />
+                            {shot.points === 3 && (
+                              <text
+                                x={cx}
+                                y={cy + 3}
+                                fontSize="8"
+                                fontWeight="900"
+                                fontFamily="JetBrains Mono"
+                                fill="#ffffff"
+                                textAnchor="middle"
+                              >
+                                3
+                              </text>
+                            )}
+                          </g>
+                        ) : (
+                          <g stroke="#ef4444" strokeWidth="2.5" strokeLinecap="round">
+                            <line x1={cx - 5} y1={cy - 5} x2={cx + 5} y2={cy + 5} />
+                            <line x1={cx + 5} y1={cy - 5} x2={cx - 5} y2={cy + 5} />
+                          </g>
                         )}
                       </g>
-                    ) : (
-                      // Missed Shot: Crisp Red 'X'
-                      <g stroke="#ef4444" strokeWidth="2.5" strokeLinecap="round">
-                        <line x1={cx - 5} y1={cy - 5} x2={cx + 5} y2={cy + 5} />
-                        <line x1={cx + 5} y1={cy - 5} x2={cx - 5} y2={cy + 5} />
-                      </g>
-                    )}
-                  </g>
-                )
-              })}
-          </svg>
-        </div>
-
-        {/* Selected Shot Detail Card Overlay */}
-        {selectedShot && (
-          <div className="mt-3 flex items-center justify-between rounded-xl border border-sky-500/40 bg-[#070d18] p-3 text-xs shadow-lg animate-in fade-in">
-            <div className="flex items-center gap-3">
-              <span
-                className={`flex h-7 w-7 items-center justify-center rounded-full font-black text-xs ${
-                  selectedShot.made ? 'bg-emerald-500 text-white' : 'bg-rose-500 text-white'
-                }`}
-              >
-                {selectedShot.made ? (selectedShot.points === 3 ? '3PT' : '2PT') : 'MISS'}
-              </span>
-              <div>
-                <div className="flex items-center gap-2">
-                  <span className="font-bold text-white text-sm">{selectedShot.shooter}</span>
-                  <span className="font-mono text-[11px] font-semibold text-sky-400">({selectedShot.teamAbbr})</span>
-                  <span className="font-mono text-[11px] text-slate-400">Q{selectedShot.period} {selectedShot.clock}</span>
-                </div>
-                <p className="text-slate-300 text-xs mt-0.5">{selectedShot.description}</p>
-              </div>
+                    )
+                  })}
+              </svg>
             </div>
-            <button
-              onClick={() => setSelectedShot(null)}
-              className="text-slate-400 hover:text-white px-2 py-1 text-xs rounded bg-white/[0.06]"
-            >
-              Close
-            </button>
-          </div>
+
+            {/* Selected Shot Detail Card Overlay */}
+            {selectedShot && (
+              <div className="mt-3 flex items-center justify-between rounded-xl border border-sky-500/40 bg-[#070d18] p-3 text-xs shadow-lg animate-in fade-in">
+                <div className="flex items-center gap-3">
+                  <span
+                    className={`flex h-7 w-7 items-center justify-center rounded-full font-black text-xs shrink-0 ${
+                      selectedShot.made ? 'bg-emerald-500 text-white' : 'bg-rose-500 text-white'
+                    }`}
+                  >
+                    {selectedShot.made ? (selectedShot.points === 3 ? '3PT' : '2PT') : 'MISS'}
+                  </span>
+                  <div>
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="font-bold text-white text-sm">{selectedShot.shooter}</span>
+                      <span className="font-mono text-[11px] font-semibold text-sky-400">({selectedShot.teamAbbr})</span>
+                      <span className="font-mono text-[11px] text-slate-400">
+                        Q{selectedShot.period} {selectedShot.clock}
+                      </span>
+                    </div>
+                    <p className="text-slate-300 text-xs mt-0.5">{selectedShot.description}</p>
+                  </div>
+                </div>
+                <button
+                  onClick={() => setSelectedShot(null)}
+                  className="text-slate-400 hover:text-white px-2 py-1 text-xs rounded bg-white/[0.06] shrink-0"
+                >
+                  Close
+                </button>
+              </div>
+            )}
+          </>
         )}
       </div>
     </div>

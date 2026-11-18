@@ -80,6 +80,15 @@ test('CourtDiagram momentum banner wraps scoring runs and clutch alerts without 
   assert.match(courtCode, /flex\s+flex-wrap\s+items-center\s+gap-2\s+sm:gap-3\s+min-w-0/)
 })
 
+test('CourtMatchupIntel enforces 1-col mobile / 12-col desktop court grid and truncation guards', () => {
+  const intelPath = path.resolve(__dirname, 'CourtMatchupIntel.tsx')
+  const intelCode = fs.readFileSync(intelPath, 'utf-8')
+
+  assert.match(intelCode, /grid-cols-1\s+lg:grid-cols-12/)
+  assert.match(intelCode, /overflow-x-auto\s+no-scrollbar/)
+  assert.match(intelCode, /truncate/)
+})
+
 test('Automated Headless Chrome Responsive Viewport Audit (if Dev Server is running)', async () => {
   const port = 9222
   let isCdpAvailable = false
