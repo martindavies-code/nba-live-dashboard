@@ -91,6 +91,11 @@ test('CourtMatchupIntel enforces 1-col mobile / 12-col desktop court grid and tr
 
 let loggedBrowserExecutable = false
 
+const DEFAULT_BROWSER_STARTUP_TIMEOUT_MS = 20_000
+const DEFAULT_MAX_STARTUP_ATTEMPTS = 2
+const MAX_CAPTURED_STDERR_CHARS = 8_192
+const STDERR_EXCERPT_CHARS = 2_000
+
 function isExecutableFile(filePath) {
   try {
     fs.accessSync(filePath, fs.constants.X_OK)
@@ -100,75 +105,472 @@ function isExecutableFile(filePath) {
   }
 }
 
-function resolveBrowserExecutable(explicitOverride) {
-  const override =
+function resolveBrowserExecutable(explicitOverride, env = process.env, isExecutableFn = isExecutableFile) {
+  const overrideRaw =
     explicitOverride ||
-    process.env.CHROME_PATH ||
-    process.env.CHROMIUM_PATH ||
-    process.env.BROWSER_BIN
+    env.CHROME_PATH ||
+    env.CHROMIUM_PATH ||
+    env.BROWSER_BIN ||
+    env.CHROME_BIN
+  const override = typeof overrideRaw === 'string' ? overrideRaw.trim() : ''
 
   if (override) {
-    if (!isExecutableFile(override)) {
+    if (!isExecutableFn(override)) {
       throw new Error(
         `Browser executable override is not executable or does not exist: "${override}". ` +
-          'Set CHROME_PATH, CHROMIUM_PATH, or BROWSER_BIN to a valid Chromium or Google Chrome binary.'
+          'Set CHROME_PATH, CHROMIUM_PATH, BROWSER_BIN, or CHROME_BIN to a valid Google Chrome or Chromium binary.'
       )
     }
     return override
   }
 
   const standardCandidates = [
+    '/usr/bin/google-chrome-stable',
+    '/usr/bin/google-chrome',
     '/usr/bin/chromium',
     '/usr/bin/chromium-browser',
-    '/usr/bin/google-chrome',
-    '/usr/bin/google-chrome-stable',
     '/snap/bin/chromium',
     '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
   ]
 
   for (const candidate of standardCandidates) {
-    if (isExecutableFile(candidate)) return candidate
+    if (isExecutableFn(candidate)) return candidate
   }
 
-  const pathDirs = (process.env.PATH || '').split(path.delimiter).filter(Boolean)
-  const binNames = ['chromium', 'chromium-browser', 'google-chrome', 'google-chrome-stable']
-  for (const dir of pathDirs) {
-    for (const bin of binNames) {
+  const pathDirs = (env.PATH || '').split(path.delimiter).filter(Boolean)
+  const binNames = ['google-chrome-stable', 'google-chrome', 'chromium', 'chromium-browser']
+  for (const bin of binNames) {
+    for (const dir of pathDirs) {
       const candidate = path.join(dir, bin)
-      if (isExecutableFile(candidate)) return candidate
+      if (isExecutableFn(candidate)) return candidate
     }
   }
 
   throw new Error(
-    `No Chromium/Chrome executable found. Checked standard paths (${standardCandidates.join(', ')}) and PATH. ` +
-      'Install Chromium/Chrome or set CHROME_PATH, CHROMIUM_PATH, or BROWSER_BIN.'
+    `No Chrome/Chromium executable found. Checked standard paths (${standardCandidates.join(', ')}) and PATH. ` +
+      'Install Google Chrome/Chromium or set CHROME_PATH, CHROMIUM_PATH, BROWSER_BIN, or CHROME_BIN.'
   )
+}
+
+function buildHeadlessBrowserArgs(userDataDir) {
+  return [
+    '--headless=new',
+    '--no-sandbox',
+    '--disable-setuid-sandbox',
+    '--disable-gpu',
+    '--disable-dev-shm-usage',
+    '--no-first-run',
+    '--no-default-browser-check',
+    '--disable-extensions',
+    '--disable-background-networking',
+    '--disable-sync',
+    '--disable-component-update',
+    '--disable-default-apps',
+    '--metrics-recording-only',
+    '--mute-audio',
+    '--remote-debugging-port=0',
+    `--user-data-dir=${userDataDir}`,
+    'about:blank',
+  ]
+}
+
+function formatStderrExcerpt(stderrBuf) {
+  const trimmed = stderrBuf.trim()
+  if (!trimmed) return '(no stderr output)'
+  return trimmed.length > STDERR_EXCERPT_CHARS ? trimmed.slice(-STDERR_EXCERPT_CHARS) : trimmed
+}
+
+function createBrowserStartupError(message, { retryable = true } = {}) {
+  const err = new Error(message)
+  err.retryable = retryable
+  return err
+}
+
+function readDevToolsActivePort(userDataDir) {
+  if (!userDataDir) return null
+  const activePortPath = path.join(userDataDir, 'DevToolsActivePort')
+  try {
+    const raw = fs.readFileSync(activePortPath, 'utf-8')
+    const lines = raw
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean)
+    if (lines.length < 2) return null
+    const [port, wsPath] = lines
+    if (!/^\d+$/.test(port) || !wsPath.startsWith('/devtools/')) return null
+    return `ws://127.0.0.1:${port}${wsPath}`
+  } catch {
+    return null
+  }
+}
+
+function waitForDevToolsEndpoint(
+  chromeProc,
+  { executablePath, userDataDir, timeoutMs = DEFAULT_BROWSER_STARTUP_TIMEOUT_MS, pollIntervalMs = 100 }
+) {
+  return new Promise((resolve, reject) => {
+    const startedAt = Date.now()
+    let settled = false
+    let stderrBuf = ''
+    let pollTimer = null
+
+    const settle = (fnToCall, val) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timeout)
+      if (pollTimer) clearInterval(pollTimer)
+      fnToCall(val)
+    }
+
+    const tryResolveFromStderr = (requireLineTerminator) => {
+      const pattern = requireLineTerminator
+        ? /DevTools listening on (ws:\/\/[^\s]+)\r?\n/
+        : /DevTools listening on (ws:\/\/[^\s]+)/
+      const match = stderrBuf.match(pattern)
+      if (match) {
+        settle(resolve, match[1])
+      }
+    }
+
+    const timeout = setTimeout(() => {
+      const elapsedMs = Date.now() - startedAt
+      settle(
+        reject,
+        createBrowserStartupError(
+          `Timed out after ${elapsedMs}ms (limit ${timeoutMs}ms) waiting for browser DevTools endpoint (${executablePath}). ` +
+            `stderr: ${formatStderrExcerpt(stderrBuf)}`,
+          { retryable: true }
+        )
+      )
+    }, timeoutMs)
+
+    if (userDataDir) {
+      pollTimer = setInterval(() => {
+        const wsUrl = readDevToolsActivePort(userDataDir)
+        if (wsUrl) {
+          settle(resolve, wsUrl)
+        }
+      }, pollIntervalMs)
+    }
+
+    chromeProc.on('error', (err) => {
+      settle(
+        reject,
+        createBrowserStartupError(`Failed to spawn browser executable "${executablePath}": ${err.message}`, {
+          retryable: false,
+        })
+      )
+    })
+
+    if (chromeProc.stderr) {
+      chromeProc.stderr.on('data', (chunk) => {
+        stderrBuf += chunk.toString()
+        if (stderrBuf.length > MAX_CAPTURED_STDERR_CHARS) {
+          stderrBuf = stderrBuf.slice(-MAX_CAPTURED_STDERR_CHARS)
+        }
+        tryResolveFromStderr(true)
+      })
+      chromeProc.stderr.on('end', () => {
+        tryResolveFromStderr(false)
+      })
+    }
+
+    chromeProc.on('exit', (code, signal) => {
+      const elapsedMs = Date.now() - startedAt
+      tryResolveFromStderr(false)
+      if (settled) return
+      const exitDetail = signal ? `signal ${signal}` : `code ${code}`
+      settle(
+        reject,
+        createBrowserStartupError(
+          `Browser "${executablePath}" exited prematurely after ${elapsedMs}ms with ${exitDetail}: ${formatStderrExcerpt(stderrBuf)}`,
+          { retryable: true }
+        )
+      )
+    })
+  })
+}
+
+async function terminateBrowserProcess(chromeProc, { graceMs = 1500, killWaitMs = 1000 } = {}) {
+  if (!chromeProc) return
+
+  const signalProcessGroup = (sig) => {
+    if (process.platform !== 'win32' && typeof chromeProc.pid === 'number' && chromeProc.pid > 0) {
+      try {
+        process.kill(-chromeProc.pid, sig)
+        return true
+      } catch {
+        return false
+      }
+    }
+    return false
+  }
+
+  const waitForExit = (maxWaitMs) =>
+    new Promise((resolve) => {
+      if (chromeProc.exitCode !== null || chromeProc.signalCode !== null) {
+        resolve(true)
+        return
+      }
+      let done = false
+      const finish = (exited) => {
+        if (done) return
+        done = true
+        clearTimeout(timer)
+        chromeProc.off?.('exit', onExit)
+        chromeProc.off?.('close', onExit)
+        resolve(exited)
+      }
+      const onExit = () => finish(true)
+      const timer = setTimeout(() => finish(false), maxWaitMs)
+      timer.unref?.()
+      chromeProc.once?.('exit', onExit)
+      chromeProc.once?.('close', onExit)
+    })
+
+  if (chromeProc.exitCode === null && chromeProc.signalCode === null) {
+    // Signal the main browser process first so it can cleanly terminate and reap its own subprocesses.
+    try {
+      chromeProc.kill('SIGTERM')
+    } catch {
+      // Process already exited
+    }
+
+    const exitedGracefully = await waitForExit(graceMs)
+    if (!exitedGracefully && chromeProc.exitCode === null && chromeProc.signalCode === null) {
+      if (!signalProcessGroup('SIGKILL')) {
+        try {
+          chromeProc.kill('SIGKILL')
+        } catch {
+          // Process already exited
+        }
+      }
+      await waitForExit(killWaitMs)
+    }
+  }
+
+  // Sweep any stray processes remaining in the detached browser process group.
+  signalProcessGroup('SIGKILL')
+}
+
+async function waitForPageTarget(cdpPort, { timeoutMs = 5000, pollIntervalMs = 50 } = {}) {
+  const deadline = Date.now() + timeoutMs
+  let lastError = null
+
+  while (Date.now() < deadline) {
+    try {
+      const listRes = await fetch(`http://127.0.0.1:${cdpPort}/json/list`)
+      if (listRes.ok) {
+        const targets = await listRes.json()
+        const pageTarget = Array.isArray(targets)
+          ? targets.find((t) => t.type === 'page' && t.webSocketDebuggerUrl)
+          : null
+        if (pageTarget) return pageTarget
+      } else {
+        lastError = new Error(`HTTP ${listRes.status} from /json/list`)
+      }
+    } catch (err) {
+      lastError = err
+    }
+    await new Promise((r) => setTimeout(r, pollIntervalMs))
+  }
+
+  throw createBrowserStartupError(
+    `Headless browser did not expose a debuggable page target on port ${cdpPort} within ${timeoutMs}ms` +
+      (lastError ? `: ${lastError.message}` : ''),
+    { retryable: true }
+  )
+}
+
+function assertNoRuntimeException(evalRes, label = 'Runtime.evaluate') {
+  if (evalRes?.exceptionDetails) {
+    const detail =
+      evalRes.exceptionDetails.exception?.description ||
+      evalRes.exceptionDetails.text ||
+      JSON.stringify(evalRes.exceptionDetails)
+    throw new Error(`${label} threw in browser runtime: ${detail}`)
+  }
+}
+
+async function connectCdpSession(wsBrowserUrl) {
+  const cdpPort = new URL(wsBrowserUrl).port
+  const pageTarget = await waitForPageTarget(cdpPort)
+
+  const ws = new WebSocket(pageTarget.webSocketDebuggerUrl)
+  await new Promise((resolve, reject) => {
+    ws.onopen = resolve
+    ws.onerror = (err) =>
+      reject(createBrowserStartupError(`CDP WebSocket error: ${err?.message || 'connection failed'}`, { retryable: true }))
+  })
+
+  let idCounter = 1
+  const pending = new Map()
+  const eventWaiters = new Map()
+
+  const rejectAllPending = (reason) => {
+    for (const { reject } of pending.values()) {
+      reject(new Error(reason))
+    }
+    pending.clear()
+    for (const waiters of eventWaiters.values()) {
+      for (const waiter of Array.from(waiters)) {
+        waiter.reject(new Error(reason))
+      }
+      waiters.clear()
+    }
+    eventWaiters.clear()
+  }
+
+  ws.addEventListener('message', (event) => {
+    const msg = JSON.parse(event.data)
+    if (msg.id && pending.has(msg.id)) {
+      const entry = pending.get(msg.id)
+      pending.delete(msg.id)
+      if (msg.error) entry.reject(new Error(msg.error.message))
+      else entry.resolve(msg.result)
+    } else if (msg.method && eventWaiters.has(msg.method)) {
+      const waiters = eventWaiters.get(msg.method)
+      for (const waiter of Array.from(waiters)) {
+        waiter.resolve(msg.params)
+      }
+    }
+  })
+  ws.addEventListener('close', () => rejectAllPending('CDP WebSocket closed before command completed'))
+  ws.addEventListener('error', () => rejectAllPending('CDP WebSocket errored before command completed'))
+
+  function sendCommand(method, params = {}) {
+    return new Promise((resolve, reject) => {
+      const id = idCounter++
+      pending.set(id, { resolve, reject })
+      ws.send(JSON.stringify({ id, method, params }))
+    })
+  }
+
+  function onceEvent(method, timeoutMs = 15_000) {
+    return new Promise((resolve, reject) => {
+      let settled = false
+      const waiter = {
+        resolve: (params) => {
+          if (settled) return
+          settled = true
+          cleanup()
+          resolve(params)
+        },
+        reject: (err) => {
+          if (settled) return
+          settled = true
+          cleanup()
+          reject(err)
+        },
+      }
+      const cleanup = () => {
+        clearTimeout(timer)
+        const set = eventWaiters.get(method)
+        if (set) {
+          set.delete(waiter)
+          if (set.size === 0) eventWaiters.delete(method)
+        }
+      }
+      const timer = setTimeout(() => {
+        waiter.reject(new Error(`Timed out waiting for CDP event "${method}" after ${timeoutMs}ms`))
+      }, timeoutMs)
+      if (!eventWaiters.has(method)) eventWaiters.set(method, new Set())
+      eventWaiters.get(method).add(waiter)
+    })
+  }
+
+  async function navigateAndWait(url, timeoutMs = 15_000) {
+    const loadPromise = onceEvent('Page.loadEventFired', timeoutMs)
+    await sendCommand('Page.navigate', { url })
+    await loadPromise
+  }
+
+  await sendCommand('Page.enable')
+  await sendCommand('Runtime.enable')
+  return { ws, sendCommand, navigateAndWait }
 }
 
 async function withHeadlessBrowser(fn, options = {}) {
   const executablePath = options.rawSpawnPath || resolveBrowserExecutable(options.browserPath)
-  if (!options.rawSpawnPath && !loggedBrowserExecutable) {
-    loggedBrowserExecutable = true
-    console.log(`[responsiveLayout.test] Browser executable: ${executablePath}`)
-  }
-
   const { createServer } = await import('vite')
   const { spawn } = await import('node:child_process')
   const os = await import('node:os')
+
+  const spawnFn = options.spawnFn || spawn
+  const connectFn = options.connectCdpFn || connectCdpSession
+  const envTimeout = Number(process.env.BROWSER_STARTUP_TIMEOUT_MS)
+  const startupTimeoutMs =
+    options.startupTimeoutMs ??
+    (Number.isFinite(envTimeout) && envTimeout > 0 ? envTimeout : DEFAULT_BROWSER_STARTUP_TIMEOUT_MS)
+  const maxStartupAttempts = Math.max(1, options.maxStartupAttempts ?? DEFAULT_MAX_STARTUP_ATTEMPTS)
 
   let vite = null
   let userDataDir = null
   let chromeProc = null
   let ws = null
 
+  const cleanupBrowserResources = async () => {
+    if (ws) {
+      try {
+        ws.close()
+      } catch {
+        // ignore close errors
+      }
+      ws = null
+    }
+    if (chromeProc) {
+      await terminateBrowserProcess(chromeProc)
+      chromeProc = null
+    }
+    if (userDataDir) {
+      try {
+        fs.rmSync(userDataDir, { recursive: true, force: true })
+      } catch {
+        // ignore temp cleanup errors
+      }
+      userDataDir = null
+    }
+  }
+
   try {
     vite = await createServer({
       root: path.resolve(__dirname, '../..'),
-      server: { port: 0, host: '127.0.0.1' },
+      server: { port: 0, host: '127.0.0.1', hmr: false },
+      optimizeDeps: {
+        include: ['react', 'react-dom', 'react-dom/client', 'lucide-react'],
+        holdUntilCrawlEnd: true,
+      },
       logLevel: 'silent',
       plugins: [
         {
           name: 'test-bridge',
+          configureServer(server) {
+            server.middlewares.use((req, res, next) => {
+              if (req.url === '/__test_harness.html') {
+                const html = [
+                  '<!doctype html>',
+                  '<html lang="en" class="dark">',
+                  '<head>',
+                  '<meta charset="UTF-8" />',
+                  '<meta name="viewport" content="width=device-width, initial-scale=1.0" />',
+                  '<link rel="stylesheet" href="/src/index.css" />',
+                  '</head>',
+                  '<body class="bg-[#060a12] text-slate-100 antialiased min-h-screen"></body>',
+                  '</html>',
+                ].join('\n')
+                server
+                  .transformIndexHtml('/__test_harness.html', html)
+                  .then((transformed) => {
+                    res.statusCode = 200
+                    res.setHeader('Content-Type', 'text/html')
+                    res.end(transformed)
+                  })
+                  .catch(next)
+                return
+              }
+              next()
+            })
+          },
           resolveId(id) {
             if (id === '/__test_bridge.ts') return id
           },
@@ -189,106 +591,64 @@ async function withHeadlessBrowser(fn, options = {}) {
     await vite.listen()
     const appPort = vite.httpServer.address().port
     const baseUrl = `http://127.0.0.1:${appPort}`
+    const harnessUrl = `${baseUrl}/__test_harness.html`
 
-    userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'nba-chrome-test-'))
-    chromeProc = spawn(
-      executablePath,
-      [
-        '--headless',
-        '--no-sandbox',
-        '--disable-gpu',
-        '--disable-dev-shm-usage',
-        '--remote-debugging-port=0',
-        `--user-data-dir=${userDataDir}`,
-        'about:blank',
-      ],
-      { stdio: ['ignore', 'ignore', 'pipe'] }
-    )
-
-    const wsBrowserUrl = await new Promise((resolve, reject) => {
-      let settled = false
-      const settle = (fnToCall, val) => {
-        if (settled) return
-        settled = true
-        clearTimeout(timeout)
-        fnToCall(val)
-      }
-      const timeout = setTimeout(
-        () => settle(reject, new Error(`Timed out waiting for browser DevTools endpoint (${executablePath})`)),
-        10000
-      )
-      let stderrBuf = ''
-      chromeProc.on('error', (err) => {
-        settle(reject, new Error(`Failed to spawn browser executable "${executablePath}": ${err.message}`))
-      })
-      chromeProc.stderr.on('data', (chunk) => {
-        stderrBuf += chunk.toString()
-        const match = stderrBuf.match(/DevTools listening on (ws:\/\/[^\s]+)/)
-        if (match) {
-          settle(resolve, match[1])
-        }
-      })
-      chromeProc.on('exit', (code) => {
-        settle(reject, new Error(`Browser "${executablePath}" exited prematurely with code ${code}: ${stderrBuf}`))
-      })
-    })
-
-    const cdpPort = new URL(wsBrowserUrl).port
-    const listRes = await fetch(`http://127.0.0.1:${cdpPort}/json/list`)
-    const targets = await listRes.json()
-    const pageTarget = targets.find((t) => t.type === 'page')
-    assert.ok(pageTarget, 'Headless browser must expose a debuggable page target')
-
-    ws = new WebSocket(pageTarget.webSocketDebuggerUrl)
-    await new Promise((resolve, reject) => {
-      ws.onopen = resolve
-      ws.onerror = (err) => reject(new Error(`CDP WebSocket error: ${err?.message || 'connection failed'}`))
-    })
-
-    let idCounter = 1
-    function sendCommand(method, params = {}) {
-      return new Promise((resolve, reject) => {
-        const id = idCounter++
-        const handler = (event) => {
-          const msg = JSON.parse(event.data)
-          if (msg.id === id) {
-            ws.removeEventListener('message', handler)
-            if (msg.error) reject(new Error(msg.error.message))
-            else resolve(msg.result)
-          }
-        }
-        ws.addEventListener('message', handler)
-        ws.send(JSON.stringify({ id, method, params }))
-      })
+    // Pre-warm bridge and CSS on cold checkouts before browser evaluation so Vite optimizeDeps never races tests.
+    if (!options.rawSpawnPath && !options.spawnFn) {
+      await fetch(`${baseUrl}/__test_bridge.ts`)
+      await fetch(`${baseUrl}/src/index.css`)
     }
 
-    await sendCommand('Page.enable')
-    await sendCommand('Runtime.enable')
-    await fn({ baseUrl, sendCommand, executablePath })
+    let sendCommand = null
+    let navigateAndWait = null
+    let startupDurationMs = 0
+
+    for (let attempt = 1; attempt <= maxStartupAttempts; attempt++) {
+      const attemptStartedAt = Date.now()
+      userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'nba-chrome-test-'))
+      try {
+        chromeProc = spawnFn(executablePath, buildHeadlessBrowserArgs(userDataDir), {
+          stdio: ['ignore', 'ignore', 'pipe'],
+          detached: process.platform !== 'win32',
+        })
+
+        const wsBrowserUrl = await waitForDevToolsEndpoint(chromeProc, {
+          executablePath,
+          userDataDir,
+          timeoutMs: startupTimeoutMs,
+        })
+
+        const session = await connectFn(wsBrowserUrl)
+        ws = session.ws
+        sendCommand = session.sendCommand
+        navigateAndWait = session.navigateAndWait
+        startupDurationMs = Date.now() - attemptStartedAt
+
+        if (!options.rawSpawnPath && !options.spawnFn && (!loggedBrowserExecutable || attempt > 1)) {
+          loggedBrowserExecutable = true
+          console.log(
+            `[responsiveLayout.test] Browser executable: ${executablePath} (ready in ${startupDurationMs}ms, attempt ${attempt}/${maxStartupAttempts})`
+          )
+        }
+        break
+      } catch (err) {
+        await cleanupBrowserResources()
+        const canRetry = Boolean(err && err.retryable) && attempt < maxStartupAttempts
+        if (canRetry) {
+          console.warn(
+            `[responsiveLayout.test] Browser startup attempt ${attempt}/${maxStartupAttempts} failed (${err.message}); retrying once with a fresh profile.`
+          )
+          continue
+        }
+        throw err
+      }
+    }
+
+    await fn({ baseUrl, harnessUrl, sendCommand, navigateAndWait, executablePath })
   } finally {
-    if (ws) {
-      try {
-        ws.close()
-      } catch {
-        // ignore close errors
-      }
-    }
-    if (chromeProc && chromeProc.exitCode === null && !chromeProc.killed) {
-      try {
-        chromeProc.kill('SIGKILL')
-      } catch {
-        // ignore kill errors
-      }
-    }
+    await cleanupBrowserResources()
     if (vite) {
       await vite.close()
-    }
-    if (userDataDir) {
-      try {
-        fs.rmSync(userDataDir, { recursive: true, force: true })
-      } catch {
-        // ignore temp cleanup errors
-      }
     }
   }
 }
@@ -304,10 +664,211 @@ test('Test runner portability: invalid browser executable rejects cleanly with a
   )
 })
 
+test('Test harness discovery: honors CHROME_BIN, prioritizes CHROME_PATH over CHROME_BIN, and prefers native Google Chrome over Chromium', () => {
+  const existingBins = new Set(['/usr/bin/chromium', '/usr/bin/google-chrome', '/custom/chrome'])
+  const fakeIsExec = (p) => existingBins.has(p)
+
+  assert.equal(
+    resolveBrowserExecutable(undefined, { CHROME_BIN: '/usr/bin/google-chrome' }, fakeIsExec),
+    '/usr/bin/google-chrome',
+    'Must honor CI-provisioned CHROME_BIN when higher-priority overrides are unset'
+  )
+
+  assert.equal(
+    resolveBrowserExecutable(
+      undefined,
+      { CHROME_PATH: '/custom/chrome', CHROME_BIN: '/usr/bin/google-chrome' },
+      fakeIsExec
+    ),
+    '/custom/chrome',
+    'CHROME_PATH must take precedence over CHROME_BIN'
+  )
+
+  assert.equal(
+    resolveBrowserExecutable(undefined, { PATH: '/usr/bin' }, fakeIsExec),
+    '/usr/bin/google-chrome',
+    'Auto-discovery must prefer native /usr/bin/google-chrome over /usr/bin/chromium'
+  )
+
+  assert.throws(
+    () => resolveBrowserExecutable(undefined, { CHROME_BIN: '/nonexistent/chrome-bin' }, fakeIsExec),
+    /Browser executable override is not executable or does not exist/
+  )
+})
+
+test('Test harness readiness: handles chunked stderr URLs without truncation, supports DevToolsActivePort, and reports stderr on early exit', async () => {
+  const { EventEmitter } = await import('node:events')
+  const { PassThrough } = await import('node:stream')
+  const os = await import('node:os')
+
+  // 1. Chunked & delayed stderr splitting the ws:// URL across chunks must resolve full intact URL
+  const chunkedProc = new EventEmitter()
+  chunkedProc.stderr = new PassThrough()
+  const chunkedPromise = waitForDevToolsEndpoint(chunkedProc, {
+    executablePath: '/fake/chrome',
+    timeoutMs: 2000,
+  })
+  chunkedProc.stderr.write('Initializing headless shell...\nDevTools listening on ws://127.0.0.1:432')
+  await new Promise((r) => setTimeout(r, 30))
+  chunkedProc.stderr.write('10/devtools/browser/abc-123-def\n')
+  const resolvedChunkedUrl = await chunkedPromise
+  assert.equal(resolvedChunkedUrl, 'ws://127.0.0.1:43210/devtools/browser/abc-123-def')
+
+  // 2. DevToolsActivePort fallback readiness when stderr is quiet
+  const activePortDir = fs.mkdtempSync(path.join(os.tmpdir(), 'nba-active-port-test-'))
+  try {
+    const quietProc = new EventEmitter()
+    quietProc.stderr = new PassThrough()
+    const activePortPromise = waitForDevToolsEndpoint(quietProc, {
+      executablePath: '/fake/chrome',
+      userDataDir: activePortDir,
+      timeoutMs: 2000,
+      pollIntervalMs: 20,
+    })
+    setTimeout(() => {
+      fs.writeFileSync(path.join(activePortDir, 'DevToolsActivePort'), '45678\n/devtools/browser/file-ready\n')
+    }, 40)
+    const resolvedFileUrl = await activePortPromise
+    assert.equal(resolvedFileUrl, 'ws://127.0.0.1:45678/devtools/browser/file-ready')
+  } finally {
+    fs.rmSync(activePortDir, { recursive: true, force: true })
+  }
+
+  // 3. Early exit must include exit code and captured stderr diagnostic
+  const crashProc = new EventEmitter()
+  crashProc.stderr = new PassThrough()
+  const crashPromise = waitForDevToolsEndpoint(crashProc, {
+    executablePath: '/fake/chrome',
+    timeoutMs: 2000,
+  })
+  crashProc.stderr.write('FATAL:sandbox_host_linux.cc: missing namespace\n')
+  crashProc.emit('exit', 133, null)
+  await assert.rejects(crashPromise, /exited prematurely.*code 133.*missing namespace/)
+})
+
+test('Test harness timeout cleanup: timeout includes captured stderr, terminates child process, and removes temp profile', async () => {
+  const { spawn } = await import('node:child_process')
+  let spawnedPid = null
+  let capturedProfileDir = null
+
+  await assert.rejects(
+    withHeadlessBrowser(async () => {}, {
+      rawSpawnPath: process.execPath,
+      startupTimeoutMs: 250,
+      maxStartupAttempts: 1,
+      spawnFn: (_bin, args, opts) => {
+        const dirArg = args.find((a) => a.startsWith('--user-data-dir='))
+        capturedProfileDir = dirArg ? dirArg.slice('--user-data-dir='.length) : null
+        const child = spawn(
+          process.execPath,
+          ['-e', 'process.stderr.write("diagnostic-hung-startup\\n"); setInterval(() => {}, 10000);'],
+          opts
+        )
+        spawnedPid = child.pid
+        return child
+      },
+    }),
+    /Timed out after .*diagnostic-hung-startup/
+  )
+
+  assert.ok(spawnedPid, 'Child process should have spawned')
+  assert.throws(
+    () => process.kill(spawnedPid, 0),
+    { code: 'ESRCH' },
+    'Timed-out browser child process must be terminated before rejection completes'
+  )
+  assert.ok(capturedProfileDir, 'Temp profile dir should have been created')
+  assert.equal(fs.existsSync(capturedProfileDir), false, 'Temp userDataDir must be removed after startup timeout')
+})
+
+test('Test harness retry policy: retries once on transient startup failure and never retries test callback assertions', async () => {
+  const { EventEmitter } = await import('node:events')
+  const { PassThrough } = await import('node:stream')
+
+  // 1. Transient startup early exit on attempt 1 -> succeeds on attempt 2
+  let launchCount = 0
+  let testRan = false
+  await withHeadlessBrowser(
+    async ({ sendCommand }) => {
+      testRan = true
+      assert.equal(typeof sendCommand, 'function')
+    },
+    {
+      rawSpawnPath: '/fake/chrome',
+      maxStartupAttempts: 2,
+      startupTimeoutMs: 1000,
+      spawnFn: () => {
+        launchCount++
+        const proc = new EventEmitter()
+        proc.stderr = new PassThrough()
+        proc.exitCode = null
+        proc.signalCode = null
+        proc.kill = () => {
+          proc.exitCode = 0
+          proc.emit('exit', 0, null)
+        }
+        if (launchCount === 1) {
+          queueMicrotask(() => {
+            proc.stderr.write('transient-cold-start-crash\n')
+            proc.exitCode = 1
+            proc.emit('exit', 1, null)
+          })
+        } else {
+          queueMicrotask(() => {
+            proc.stderr.write('DevTools listening on ws://127.0.0.1:49999/devtools/browser/retry-ok\n')
+          })
+        }
+        return proc
+      },
+      connectCdpFn: async () => ({
+        ws: { close() {} },
+        sendCommand: async () => ({}),
+      }),
+    }
+  )
+  assert.equal(launchCount, 2, 'Transient startup failure should retry exactly once')
+  assert.equal(testRan, true, 'Test callback must run after successful retry')
+
+  // 2. Assertion failure inside test callback must NEVER trigger browser retry
+  let assertionLaunchCount = 0
+  await assert.rejects(
+    withHeadlessBrowser(
+      async () => {
+        throw new Error('intentional-assertion-failure')
+      },
+      {
+        rawSpawnPath: '/fake/chrome',
+        maxStartupAttempts: 2,
+        startupTimeoutMs: 1000,
+        spawnFn: () => {
+          assertionLaunchCount++
+          const proc = new EventEmitter()
+          proc.stderr = new PassThrough()
+          proc.exitCode = null
+          proc.signalCode = null
+          proc.kill = () => {
+            proc.exitCode = 0
+            proc.emit('exit', 0, null)
+          }
+          queueMicrotask(() => {
+            proc.stderr.write('DevTools listening on ws://127.0.0.1:49998/devtools/browser/no-retry\n')
+          })
+          return proc
+        },
+        connectCdpFn: async () => ({
+          ws: { close() {} },
+          sendCommand: async () => ({}),
+        }),
+      }
+    ),
+    /intentional-assertion-failure/
+  )
+  assert.equal(assertionLaunchCount, 1, 'Test assertion failure must never trigger startup retry')
+})
+
 test('P1 Regression: Mounted HeroMatchup handles StrictMode, rapid A/B/A switching, clears stale state on failed gameState transitions, and runs bounded TTL refresh', async () => {
-  await withHeadlessBrowser(async ({ baseUrl, sendCommand }) => {
-    await sendCommand('Page.navigate', { url: `${baseUrl}/` })
-    await new Promise((r) => setTimeout(r, 800))
+  await withHeadlessBrowser(async ({ harnessUrl, sendCommand, navigateAndWait }) => {
+    await navigateAndWait(harnessUrl)
 
     const evalRes = await sendCommand('Runtime.evaluate', {
       awaitPromise: true,
@@ -543,6 +1104,7 @@ test('P1 Regression: Mounted HeroMatchup handles StrictMode, rapid A/B/A switchi
       })()`,
     })
 
+    assertNoRuntimeException(evalRes, 'Mounted HeroMatchup StrictMode test')
     const res = evalRes?.result?.value
     assert.ok(res, `HeroMatchup browser test must return results (evalRes=${JSON.stringify(evalRes)})`)
     assert.equal(res.hadPreMarker, true, `StrictMode mount must load and render initial pre-game summary (res=${JSON.stringify(res)})`)
@@ -554,12 +1116,11 @@ test('P1 Regression: Mounted HeroMatchup handles StrictMode, rapid A/B/A switchi
 })
 
 test('P2 Regression: Mobile 360px & 390px tab visibility, readable zone figures, and no-wrap box score cells with 157-shot post-game payload', async () => {
-  await withHeadlessBrowser(async ({ baseUrl, sendCommand }) => {
-    await sendCommand('Page.navigate', { url: `${baseUrl}/` })
-    await new Promise((r) => setTimeout(r, 800))
+  await withHeadlessBrowser(async ({ harnessUrl, sendCommand, navigateAndWait }) => {
+    await navigateAndWait(harnessUrl)
 
     // Mount HeroMatchup with a realistic 157-shot post-game payload
-    await sendCommand('Runtime.evaluate', {
+    const mountRes = await sendCommand('Runtime.evaluate', {
       awaitPromise: true,
       returnByValue: true,
       expression: `(async () => {
@@ -715,6 +1276,7 @@ test('P2 Regression: Mobile 360px & 390px tab visibility, readable zone figures,
         return true
       })()`,
     })
+    assertNoRuntimeException(mountRes, 'Mobile 157-shot HeroMatchup mount')
 
     const testViewports = [
       { width: 360, height: 740, mobile: true },
@@ -851,9 +1413,8 @@ test('P2 Regression: Mobile 360px & 390px tab visibility, readable zone figures,
 })
 
 test('P1 Follow-Up Regression (Reproduction B): Mounted HeroMatchup in post mode rejects lagging pre-game MEM/CLE summary and never shows season averages as Final Game Leaders / GAME TOTAL', async () => {
-  await withHeadlessBrowser(async ({ baseUrl, sendCommand }) => {
-    await sendCommand('Page.navigate', { url: `${baseUrl}/` })
-    await new Promise((r) => setTimeout(r, 800))
+  await withHeadlessBrowser(async ({ harnessUrl, sendCommand, navigateAndWait }) => {
+    await navigateAndWait(harnessUrl)
 
     const evalRes = await sendCommand('Runtime.evaluate', {
       awaitPromise: true,
@@ -1051,6 +1612,7 @@ test('P1 Follow-Up Regression (Reproduction B): Mounted HeroMatchup in post mode
       })()`,
     })
 
+    assertNoRuntimeException(evalRes, 'Mounted post HeroMatchup lagging pre-game test')
     const val = evalRes?.result?.value
     assert.ok(val, 'Browser evaluation must return a value')
     assert.equal(val.leakedTyJerome, false, 'Mounted post HeroMatchup must NEVER render pre-game Ty Jerome 25.4 as final game total')
