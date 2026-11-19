@@ -382,6 +382,16 @@ async function waitForPageTarget(cdpPort, { timeoutMs = 5000, pollIntervalMs = 5
   )
 }
 
+function assertNoRuntimeException(evalRes, label = 'Runtime.evaluate') {
+  if (evalRes?.exceptionDetails) {
+    const detail =
+      evalRes.exceptionDetails.exception?.description ||
+      evalRes.exceptionDetails.text ||
+      JSON.stringify(evalRes.exceptionDetails)
+    throw new Error(`${label} threw in browser runtime: ${detail}`)
+  }
+}
+
 async function connectCdpSession(wsBrowserUrl) {
   const cdpPort = new URL(wsBrowserUrl).port
   const pageTarget = await waitForPageTarget(cdpPort)
@@ -395,11 +405,20 @@ async function connectCdpSession(wsBrowserUrl) {
 
   let idCounter = 1
   const pending = new Map()
+  const eventWaiters = new Map()
+
   const rejectAllPending = (reason) => {
     for (const { reject } of pending.values()) {
       reject(new Error(reason))
     }
     pending.clear()
+    for (const waiters of eventWaiters.values()) {
+      for (const waiter of Array.from(waiters)) {
+        waiter.reject(new Error(reason))
+      }
+      waiters.clear()
+    }
+    eventWaiters.clear()
   }
 
   ws.addEventListener('message', (event) => {
@@ -409,6 +428,11 @@ async function connectCdpSession(wsBrowserUrl) {
       pending.delete(msg.id)
       if (msg.error) entry.reject(new Error(msg.error.message))
       else entry.resolve(msg.result)
+    } else if (msg.method && eventWaiters.has(msg.method)) {
+      const waiters = eventWaiters.get(msg.method)
+      for (const waiter of Array.from(waiters)) {
+        waiter.resolve(msg.params)
+      }
     }
   })
   ws.addEventListener('close', () => rejectAllPending('CDP WebSocket closed before command completed'))
@@ -422,9 +446,48 @@ async function connectCdpSession(wsBrowserUrl) {
     })
   }
 
+  function onceEvent(method, timeoutMs = 15_000) {
+    return new Promise((resolve, reject) => {
+      let settled = false
+      const waiter = {
+        resolve: (params) => {
+          if (settled) return
+          settled = true
+          cleanup()
+          resolve(params)
+        },
+        reject: (err) => {
+          if (settled) return
+          settled = true
+          cleanup()
+          reject(err)
+        },
+      }
+      const cleanup = () => {
+        clearTimeout(timer)
+        const set = eventWaiters.get(method)
+        if (set) {
+          set.delete(waiter)
+          if (set.size === 0) eventWaiters.delete(method)
+        }
+      }
+      const timer = setTimeout(() => {
+        waiter.reject(new Error(`Timed out waiting for CDP event "${method}" after ${timeoutMs}ms`))
+      }, timeoutMs)
+      if (!eventWaiters.has(method)) eventWaiters.set(method, new Set())
+      eventWaiters.get(method).add(waiter)
+    })
+  }
+
+  async function navigateAndWait(url, timeoutMs = 15_000) {
+    const loadPromise = onceEvent('Page.loadEventFired', timeoutMs)
+    await sendCommand('Page.navigate', { url })
+    await loadPromise
+  }
+
   await sendCommand('Page.enable')
   await sendCommand('Runtime.enable')
-  return { ws, sendCommand }
+  return { ws, sendCommand, navigateAndWait }
 }
 
 async function withHeadlessBrowser(fn, options = {}) {
@@ -472,11 +535,42 @@ async function withHeadlessBrowser(fn, options = {}) {
   try {
     vite = await createServer({
       root: path.resolve(__dirname, '../..'),
-      server: { port: 0, host: '127.0.0.1' },
+      server: { port: 0, host: '127.0.0.1', hmr: false },
+      optimizeDeps: {
+        include: ['react', 'react-dom', 'react-dom/client', 'lucide-react'],
+        holdUntilCrawlEnd: true,
+      },
       logLevel: 'silent',
       plugins: [
         {
           name: 'test-bridge',
+          configureServer(server) {
+            server.middlewares.use((req, res, next) => {
+              if (req.url === '/__test_harness.html') {
+                const html = [
+                  '<!doctype html>',
+                  '<html lang="en" class="dark">',
+                  '<head>',
+                  '<meta charset="UTF-8" />',
+                  '<meta name="viewport" content="width=device-width, initial-scale=1.0" />',
+                  '<link rel="stylesheet" href="/src/index.css" />',
+                  '</head>',
+                  '<body class="bg-[#060a12] text-slate-100 antialiased min-h-screen"></body>',
+                  '</html>',
+                ].join('\n')
+                server
+                  .transformIndexHtml('/__test_harness.html', html)
+                  .then((transformed) => {
+                    res.statusCode = 200
+                    res.setHeader('Content-Type', 'text/html')
+                    res.end(transformed)
+                  })
+                  .catch(next)
+                return
+              }
+              next()
+            })
+          },
           resolveId(id) {
             if (id === '/__test_bridge.ts') return id
           },
@@ -497,8 +591,16 @@ async function withHeadlessBrowser(fn, options = {}) {
     await vite.listen()
     const appPort = vite.httpServer.address().port
     const baseUrl = `http://127.0.0.1:${appPort}`
+    const harnessUrl = `${baseUrl}/__test_harness.html`
+
+    // Pre-warm bridge and CSS on cold checkouts before browser evaluation so Vite optimizeDeps never races tests.
+    if (!options.rawSpawnPath && !options.spawnFn) {
+      await fetch(`${baseUrl}/__test_bridge.ts`)
+      await fetch(`${baseUrl}/src/index.css`)
+    }
 
     let sendCommand = null
+    let navigateAndWait = null
     let startupDurationMs = 0
 
     for (let attempt = 1; attempt <= maxStartupAttempts; attempt++) {
@@ -519,6 +621,7 @@ async function withHeadlessBrowser(fn, options = {}) {
         const session = await connectFn(wsBrowserUrl)
         ws = session.ws
         sendCommand = session.sendCommand
+        navigateAndWait = session.navigateAndWait
         startupDurationMs = Date.now() - attemptStartedAt
 
         if (!options.rawSpawnPath && !options.spawnFn && (!loggedBrowserExecutable || attempt > 1)) {
@@ -541,7 +644,7 @@ async function withHeadlessBrowser(fn, options = {}) {
       }
     }
 
-    await fn({ baseUrl, sendCommand, executablePath })
+    await fn({ baseUrl, harnessUrl, sendCommand, navigateAndWait, executablePath })
   } finally {
     await cleanupBrowserResources()
     if (vite) {
@@ -764,9 +867,8 @@ test('Test harness retry policy: retries once on transient startup failure and n
 })
 
 test('P1 Regression: Mounted HeroMatchup handles StrictMode, rapid A/B/A switching, clears stale state on failed gameState transitions, and runs bounded TTL refresh', async () => {
-  await withHeadlessBrowser(async ({ baseUrl, sendCommand }) => {
-    await sendCommand('Page.navigate', { url: `${baseUrl}/` })
-    await new Promise((r) => setTimeout(r, 800))
+  await withHeadlessBrowser(async ({ harnessUrl, sendCommand, navigateAndWait }) => {
+    await navigateAndWait(harnessUrl)
 
     const evalRes = await sendCommand('Runtime.evaluate', {
       awaitPromise: true,
@@ -1002,6 +1104,7 @@ test('P1 Regression: Mounted HeroMatchup handles StrictMode, rapid A/B/A switchi
       })()`,
     })
 
+    assertNoRuntimeException(evalRes, 'Mounted HeroMatchup StrictMode test')
     const res = evalRes?.result?.value
     assert.ok(res, `HeroMatchup browser test must return results (evalRes=${JSON.stringify(evalRes)})`)
     assert.equal(res.hadPreMarker, true, `StrictMode mount must load and render initial pre-game summary (res=${JSON.stringify(res)})`)
@@ -1013,12 +1116,11 @@ test('P1 Regression: Mounted HeroMatchup handles StrictMode, rapid A/B/A switchi
 })
 
 test('P2 Regression: Mobile 360px & 390px tab visibility, readable zone figures, and no-wrap box score cells with 157-shot post-game payload', async () => {
-  await withHeadlessBrowser(async ({ baseUrl, sendCommand }) => {
-    await sendCommand('Page.navigate', { url: `${baseUrl}/` })
-    await new Promise((r) => setTimeout(r, 800))
+  await withHeadlessBrowser(async ({ harnessUrl, sendCommand, navigateAndWait }) => {
+    await navigateAndWait(harnessUrl)
 
     // Mount HeroMatchup with a realistic 157-shot post-game payload
-    await sendCommand('Runtime.evaluate', {
+    const mountRes = await sendCommand('Runtime.evaluate', {
       awaitPromise: true,
       returnByValue: true,
       expression: `(async () => {
@@ -1174,6 +1276,7 @@ test('P2 Regression: Mobile 360px & 390px tab visibility, readable zone figures,
         return true
       })()`,
     })
+    assertNoRuntimeException(mountRes, 'Mobile 157-shot HeroMatchup mount')
 
     const testViewports = [
       { width: 360, height: 740, mobile: true },
@@ -1310,9 +1413,8 @@ test('P2 Regression: Mobile 360px & 390px tab visibility, readable zone figures,
 })
 
 test('P1 Follow-Up Regression (Reproduction B): Mounted HeroMatchup in post mode rejects lagging pre-game MEM/CLE summary and never shows season averages as Final Game Leaders / GAME TOTAL', async () => {
-  await withHeadlessBrowser(async ({ baseUrl, sendCommand }) => {
-    await sendCommand('Page.navigate', { url: `${baseUrl}/` })
-    await new Promise((r) => setTimeout(r, 800))
+  await withHeadlessBrowser(async ({ harnessUrl, sendCommand, navigateAndWait }) => {
+    await navigateAndWait(harnessUrl)
 
     const evalRes = await sendCommand('Runtime.evaluate', {
       awaitPromise: true,
@@ -1510,6 +1612,7 @@ test('P1 Follow-Up Regression (Reproduction B): Mounted HeroMatchup in post mode
       })()`,
     })
 
+    assertNoRuntimeException(evalRes, 'Mounted post HeroMatchup lagging pre-game test')
     const val = evalRes?.result?.value
     assert.ok(val, 'Browser evaluation must return a value')
     assert.equal(val.leakedTyJerome, false, 'Mounted post HeroMatchup must NEVER render pre-game Ty Jerome 25.4 as final game total')
