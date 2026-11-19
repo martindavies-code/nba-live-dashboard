@@ -189,7 +189,7 @@ export const GameCard: React.FC<GameCardProps> = memo(({
                   {awayComp?.team?.abbreviation}
                 </span>
               </div>
-              <span className="text-xs text-slate-400">{awayComp?.records?.[0]?.summary || '0-0'}</span>
+              <span className="text-xs text-slate-400">{awayComp?.records?.[0]?.summary || '—'}</span>
             </div>
           </div>
           <span className="font-['Oswald'] text-2xl sm:text-3xl font-bold tracking-tight text-white tabular-nums shrink-0 ml-2">
@@ -216,7 +216,7 @@ export const GameCard: React.FC<GameCardProps> = memo(({
                   {homeComp?.team?.abbreviation}
                 </span>
               </div>
-              <span className="text-xs text-slate-400">{homeComp?.records?.[0]?.summary || '0-0'}</span>
+              <span className="text-xs text-slate-400">{homeComp?.records?.[0]?.summary || '—'}</span>
             </div>
           </div>
           <span className="font-['Oswald'] text-2xl sm:text-3xl font-bold tracking-tight text-white tabular-nums shrink-0 ml-2">

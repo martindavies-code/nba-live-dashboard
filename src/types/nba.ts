@@ -28,6 +28,8 @@ export interface NBACompetitorStat {
   abbreviation?: string
   displayValue: string
   rankDisplayValue?: string
+  verifiedRank?: boolean
+  rankScope?: string
   label?: string
 }
 
@@ -233,6 +235,8 @@ export interface NBATeamSummaryStats {
   avgSteals?: string
   avgBlocks?: string
   avgTurnovers?: string
+  avgTotalTurnovers?: string
+  avgTeamTurnovers?: string
   fgMadeAttempted?: string
   threePtMadeAttempted?: string
   ftMadeAttempted?: string
@@ -243,9 +247,14 @@ export interface NBATeamSummaryStats {
   steals?: string
   blocks?: string
   turnovers?: string
+  totalTurnovers?: string
+  playerTurnovers?: string
+  teamTurnovers?: string
   pointsInPaint?: string
   fastBreakPoints?: string
   turnoverPoints?: string
+  pointsConcededOffTurnovers?: string
+  pointsScoredOffTurnovers?: string
   largestLead?: string
   leadChanges?: string
   leadPercentage?: string
@@ -264,6 +273,10 @@ export interface NBATeamSummary {
 
 export interface NBAGameSummary {
   eventId: string
+  gameState?: 'pre' | 'in' | 'post'
+  provenance?: 'live' | 'cache' | 'stale-cache' | 'demo'
+  isStale?: boolean
+  fetchedAt?: number
   awayTeam: NBATeamSummary | null
   homeTeam: NBATeamSummary | null
   shots: NBAShot[]
@@ -309,6 +322,7 @@ export interface NBAEvent {
   date: string
   name: string
   shortName: string
+  isDemo?: boolean
   season?: {
     year: number
     type: number
