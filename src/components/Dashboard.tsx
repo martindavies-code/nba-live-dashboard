@@ -256,6 +256,16 @@ export const Dashboard: React.FC = () => {
         </div>
       )}
 
+      {/* Demo Data Provenance Strip */}
+      {events.some((e) => e.isDemo) && (
+        <div
+          data-testid="dashboard-demo-banner"
+          className="flex items-center justify-center gap-2 bg-amber-500/15 border-b border-amber-400/35 px-4 py-1.5 text-xs font-bold text-amber-200"
+        >
+          <span>Demo Mode: ESPN live feed unavailable — showing sample fixtures (demo-mock-*)</span>
+        </div>
+      )}
+
       {/* Error Alert Strip */}
       {error && (
         <div className="flex items-center justify-between bg-rose-500/20 border-b border-rose-500/30 px-4 py-2 text-xs font-bold text-rose-300">

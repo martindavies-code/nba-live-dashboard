@@ -1,6 +1,11 @@
-import React, { useState, useEffect, memo, useMemo } from 'react'
+import React, { useState, useEffect, memo, useMemo, useRef } from 'react'
 import type { NBAEvent, NBAGameSummary } from '../types/nba'
-import { fetchNBAGameSummary } from '../services/espnApi'
+import {
+  fetchNBAGameSummary,
+  buildSummaryIdentityKey,
+  normalizeGameState,
+  getSummaryCacheTtlMs,
+} from '../services/espnApi'
 import { CourtDiagram } from './CourtDiagram'
 import { WinProbabilityBar } from './WinProbabilityBar'
 import { getScorigamiInfo } from '../utils/scorigami'
@@ -31,29 +36,37 @@ interface HeroMatchupProps {
   event: NBAEvent
   onSelectGame?: (id: string) => void
   timeZoneMode?: TimeZoneMode
+  summaryRefreshIntervalMs?: number
 }
 
 function areHeroPropsEqual(prev: HeroMatchupProps, next: HeroMatchupProps): boolean {
   if (prev.timeZoneMode !== next.timeZoneMode) return false
+  if (prev.summaryRefreshIntervalMs !== next.summaryRefreshIntervalMs) return false
   return areEventsEqual(prev.event, next.event)
 }
 
-export const HeroMatchup: React.FC<HeroMatchupProps> = memo(({ event, timeZoneMode }) => {
+export const HeroMatchup: React.FC<HeroMatchupProps> = memo(({
+  event,
+  timeZoneMode,
+  summaryRefreshIntervalMs,
+}) => {
   const [isCopied, setIsCopied] = useState<boolean>(false)
   const [summaryState, setSummaryState] = useState<{
-    eventId: string
+    identityKey: string
+    gameState: 'pre' | 'in' | 'post'
     data: NBAGameSummary | null
-  }>({ eventId: '', data: null })
+  }>({ identityKey: '', gameState: 'pre', data: null })
   const [isSummaryLoading, setIsSummaryLoading] = useState<boolean>(false)
+  const requestGenRef = useRef<number>(0)
 
   const competition = event.competitions?.[0]
   const hasCompetition = Boolean(competition)
 
   const { status } = event
-  const state = status.type?.state || 'in'
+  const state = normalizeGameState(status.type?.state || 'in')
   const isLive = state === 'in'
   const isFinal = state === 'post'
-  const isUpcoming = state === 'pre' || (!isLive && !isFinal)
+  const isUpcoming = state === 'pre'
   const situation = competition?.situation
 
   const competitors = competition?.competitors || []
@@ -75,41 +88,160 @@ export const HeroMatchup: React.FC<HeroMatchupProps> = memo(({ event, timeZoneMo
   const awayTeamId = awayComp?.team?.id
   const shotsLength = competition?.shots?.length ?? 0
 
+  const summaryIdentityKey = useMemo(
+    () =>
+      buildSummaryIdentityKey(event.id, state, {
+        homeTeamId,
+        awayTeamId,
+        homeAbbr,
+        awayAbbr,
+      }),
+    [event.id, state, homeTeamId, awayTeamId, homeAbbr, awayAbbr]
+  )
+
   useEffect(() => {
     if (!event.id || !hasCompetition) return
-    const controller = new AbortController()
     let active = true
+    let currentController: AbortController | null = null
+    let refreshTimer: ReturnType<typeof setTimeout> | null = null
+    let consecutiveFailures = 0
 
-    setIsSummaryLoading(true)
-    fetchNBAGameSummary(event.id, state, controller.signal, {
-      homeTeamId,
-      awayTeamId,
-      homeAbbr,
-      awayAbbr,
-    })
-      .then((data) => {
-        if (!active || controller.signal.aborted) return
-        setSummaryState((prev) => {
-          if (prev.eventId === event.id && data === null && prev.data !== null) {
-            return prev
-          }
-          return { eventId: event.id, data }
+    const clearPendingTimer = () => {
+      if (refreshTimer !== null) {
+        clearTimeout(refreshTimer)
+        refreshTimer = null
+      }
+    }
+
+    const scheduleNextRefresh = (failed: boolean) => {
+      if (!active) return
+      clearPendingTimer()
+      const hasCustomInterval =
+        typeof summaryRefreshIntervalMs === 'number' &&
+        Number.isFinite(summaryRefreshIntervalMs) &&
+        summaryRefreshIntervalMs > 0
+      const baseInterval = hasCustomInterval
+        ? summaryRefreshIntervalMs
+        : getSummaryCacheTtlMs(state)
+      const delayMs =
+        failed && !hasCustomInterval
+          ? consecutiveFailures <= 5
+            ? Math.min(baseInterval, 15_000 * Math.pow(2, Math.min(consecutiveFailures - 1, 3)))
+            : baseInterval
+          : baseInterval
+      refreshTimer = setTimeout(() => {
+        if (!active) return
+        void runFetch(true)
+      }, delayMs)
+    }
+
+    const runFetch = async (forceRefresh: boolean) => {
+      if (!active) return
+      const gen = ++requestGenRef.current
+      currentController?.abort()
+      const controller = new AbortController()
+      currentController = controller
+
+      setIsSummaryLoading(true)
+      let fetchFailed = false
+
+      try {
+        const data = await fetchNBAGameSummary(event.id, state, controller.signal, {
+          homeTeamId,
+          awayTeamId,
+          homeAbbr,
+          awayAbbr,
+          forceRefresh,
         })
-      })
-      .catch((err: unknown) => {
-        if (!active || controller.signal.aborted || isAbortError(err)) return
-      })
-      .finally(() => {
-        if (active && !controller.signal.aborted) {
-          setIsSummaryLoading(false)
+        if (!active || controller.signal.aborted || gen !== requestGenRef.current) return
+
+        if (data === null) {
+          fetchFailed = true
+          consecutiveFailures++
+          setSummaryState((prev) => {
+            // Only preserve stale data when BOTH identityKey and gameState match;
+            // NEVER carry previous state's summary across a gameState transition or event switch.
+            if (
+              prev.identityKey === summaryIdentityKey &&
+              prev.gameState === state &&
+              prev.data !== null
+            ) {
+              return {
+                identityKey: summaryIdentityKey,
+                gameState: state,
+                data: {
+                  ...prev.data,
+                  gameState: state,
+                  provenance: 'stale-cache',
+                  isStale: true,
+                },
+              }
+            }
+            return { identityKey: summaryIdentityKey, gameState: state, data: null }
+          })
+        } else {
+          consecutiveFailures = data.isStale ? consecutiveFailures + 1 : 0
+          fetchFailed = Boolean(data.isStale)
+          setSummaryState({
+            identityKey: summaryIdentityKey,
+            gameState: state,
+            data,
+          })
         }
-      })
+      } catch (err: unknown) {
+        if (!active || controller.signal.aborted || isAbortError(err) || gen !== requestGenRef.current) {
+          return
+        }
+        fetchFailed = true
+        consecutiveFailures++
+        setSummaryState((prev) => {
+          if (
+            prev.identityKey === summaryIdentityKey &&
+            prev.gameState === state &&
+            prev.data !== null
+          ) {
+            return {
+              identityKey: summaryIdentityKey,
+              gameState: state,
+              data: {
+                ...prev.data,
+                gameState: state,
+                provenance: 'stale-cache',
+                isStale: true,
+              },
+            }
+          }
+          return { identityKey: summaryIdentityKey, gameState: state, data: null }
+        })
+      } finally {
+        if (active && !controller.signal.aborted && gen === requestGenRef.current) {
+          setIsSummaryLoading(false)
+          scheduleNextRefresh(fetchFailed)
+        }
+      }
+    }
+
+    void runFetch(false)
 
     return () => {
       active = false
-      controller.abort()
+      clearPendingTimer()
+      currentController?.abort()
     }
-  }, [event.id, state, homeTeamId, awayTeamId, homeAbbr, awayAbbr, homeScore, awayScore, shotsLength, hasCompetition])
+  }, [
+    event.id,
+    state,
+    summaryIdentityKey,
+    homeTeamId,
+    awayTeamId,
+    homeAbbr,
+    awayAbbr,
+    homeScore,
+    awayScore,
+    shotsLength,
+    hasCompetition,
+    summaryRefreshIntervalMs,
+  ])
 
   const scorigamiInfo = useMemo(() => {
     return getScorigamiInfo(
@@ -148,7 +280,10 @@ export const HeroMatchup: React.FC<HeroMatchupProps> = memo(({ event, timeZoneMo
 
   if (!competition) return null
 
-  const activeSummary = summaryState.eventId === event.id ? summaryState.data : null
+  const activeSummary =
+    summaryState.identityKey === summaryIdentityKey && summaryState.gameState === state
+      ? summaryState.data
+      : null
 
   const handleCopySnapshot = async () => {
     const awayName = awayComp?.team?.displayName || awayAbbr
@@ -188,6 +323,16 @@ export const HeroMatchup: React.FC<HeroMatchupProps> = memo(({ event, timeZoneMo
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
+          {/* Demo Provenance Badge */}
+          {(event.isDemo || activeSummary?.provenance === 'demo') && (
+            <span
+              data-testid="demo-provenance-badge"
+              className="inline-flex items-center gap-1 rounded bg-amber-500/20 border border-amber-400/50 px-2 py-0.5 text-xs font-extrabold uppercase tracking-wider text-amber-200"
+            >
+              Demo Data
+            </span>
+          )}
+
           {/* Announcing Crew Network Badge */}
           {crew?.network && (
             <span className="inline-flex items-center gap-1.5 rounded-full bg-sky-500/20 border border-sky-400/40 px-2.5 py-0.5 sm:px-3 sm:py-1 font-semibold text-sky-200 text-xs">
@@ -216,9 +361,9 @@ export const HeroMatchup: React.FC<HeroMatchupProps> = memo(({ event, timeZoneMo
         </div>
       </div>
 
-      <div className="p-4 sm:p-6 space-y-5">
+      <div className="p-3 sm:p-6 space-y-5">
         {/* Full-Width Commanding Scoreboard Header */}
-        <div className="rounded-xl border border-white/[0.12] bg-[#080d1a] p-4 sm:p-6 shadow-lg">
+        <div className="rounded-xl border border-white/[0.12] bg-[#080d1a] p-3.5 sm:p-6 shadow-lg">
           {/* Venue & Clock Info Strip */}
           <div className="flex items-center justify-between gap-2 border-b border-white/[0.08] pb-3 text-xs sm:text-sm text-slate-300">
             <span className="flex items-center gap-2 shrink-0 font-semibold">
@@ -257,7 +402,7 @@ export const HeroMatchup: React.FC<HeroMatchupProps> = memo(({ event, timeZoneMo
                     </span>
                   </div>
                   <div className="flex items-center gap-2 text-xs sm:text-sm text-slate-300 mt-1">
-                    <span className="font-medium">{awayComp?.records?.[0]?.summary || '0-0'}</span>
+                    <span className="font-medium">{awayComp?.records?.[0]?.summary || '—'}</span>
                     {situation?.possession === awayComp?.team?.id && (
                       <span className="rounded bg-orange-500/25 border border-orange-500/50 text-orange-200 font-extrabold text-xs px-2 py-0.5 shrink-0 animate-pulse">
                         🏀 POSSESSION
@@ -347,7 +492,7 @@ export const HeroMatchup: React.FC<HeroMatchupProps> = memo(({ event, timeZoneMo
                         🏀 POSSESSION
                       </span>
                     )}
-                    <span className="font-medium">{homeComp?.records?.[0]?.summary || '0-0'}</span>
+                    <span className="font-medium">{homeComp?.records?.[0]?.summary || '—'}</span>
                   </div>
                 </div>
               </div>
@@ -535,7 +680,7 @@ export const HeroMatchup: React.FC<HeroMatchupProps> = memo(({ event, timeZoneMo
         </div>
 
         {/* Tactical Basketball Court & Momentum Radar (Full-Width Symmetrical Display) */}
-        <div className="rounded-xl border border-white/[0.12] bg-[#080d1a] p-3.5 sm:p-5 shadow-md">
+        <div className="rounded-xl border border-white/[0.12] bg-[#080d1a] p-2.5 sm:p-5 shadow-md">
           <CourtDiagram
             eventId={event.id}
             situation={situation}

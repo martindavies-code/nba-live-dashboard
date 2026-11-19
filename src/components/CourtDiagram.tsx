@@ -2,7 +2,7 @@ import React, { useState, useId, memo, useMemo, useEffect } from 'react'
 import type { NBACompetitor, NBAShot, NBASituation, NBAStatus, NBAGameSummary } from '../types/nba'
 import { sanitizeHexColor } from '../utils/nbaHelpers'
 import { formatGameKickoff, type TimeZoneMode } from '../utils/timezone.ts'
-import { computeShootingZones, extractRecordSummary } from '../utils/matchupStats'
+import { computeShootingZones, extractRecordSummary, getValidatedTeamSummary } from '../utils/matchupStats'
 import { CourtMatchupIntel } from './CourtMatchupIntel'
 import { Flame, Clock, Crosshair, BarChart2, ShieldAlert, ClipboardList, Trophy } from 'lucide-react'
 
@@ -30,7 +30,7 @@ function defaultViewModeForState(gameState: string): CourtViewMode {
 export const CourtDiagram: React.FC<CourtDiagramProps> = memo(({
   eventId,
   situation,
-  competitors,
+  competitors = [],
   shots = [],
   summary,
   isSummaryLoading = false,
@@ -56,17 +56,24 @@ export const CourtDiagram: React.FC<CourtDiagramProps> = memo(({
   const homeComp = competitors.find((c) => c.homeAway === 'home')
   const awayComp = competitors.find((c) => c.homeAway === 'away')
 
+  const validatedAwaySummary = getValidatedTeamSummary(summary?.awayTeam, awayComp)
+  const validatedHomeSummary = getValidatedTeamSummary(summary?.homeTeam, homeComp)
+  const hasMismatchedSummaryTeam =
+    (Boolean(summary?.awayTeam) && !validatedAwaySummary) ||
+    (Boolean(summary?.homeTeam) && !validatedHomeSummary)
+  const safeSummary = hasMismatchedSummaryTeam ? null : summary
+
   const homeColor = sanitizeHexColor(homeComp?.team?.color, '#1d428a')
   const awayColor = sanitizeHexColor(awayComp?.team?.color, '#ce1141')
   // Strict alphanumeric sanitisation for SVG text nodes
   const homeAbbr = (homeComp?.team?.abbreviation || 'HOME').replace(/[^A-Za-z0-9]/g, '').slice(0, 6) || 'HOME'
   const awayAbbr = (awayComp?.team?.abbreviation || 'AWAY').replace(/[^A-Za-z0-9]/g, '').slice(0, 6) || 'AWAY'
 
-  // Effective shots: prefer competition.shots if provided, otherwise summary.shots
+  // Effective shots: prefer competition.shots if provided, otherwise validated summary.shots
   const effectiveShots = useMemo(() => {
     if (Array.isArray(shots) && shots.length > 0) return shots
-    return summary?.shots || []
-  }, [shots, summary?.shots])
+    return safeSummary?.shots || []
+  }, [shots, safeSummary?.shots])
 
   // Memoized filtered shots to prevent unnecessary recalculation
   const filteredShots = useMemo(() => {
@@ -79,7 +86,7 @@ export const CourtDiagram: React.FC<CourtDiagramProps> = memo(({
     })
   }, [effectiveShots, shotFilter, homeAbbr, awayAbbr, homeComp?.team?.id, awayComp?.team?.id])
 
-  // Single-pass shooting summary calculation
+  // Single-pass shooting summary calculation (preserves null percentage when no shots are tracked)
   const { totalShots, madeShots, fgPct, threePointersMade, threePointersTotal } = useMemo(() => {
     let made = 0
     let tpMade = 0
@@ -93,7 +100,7 @@ export const CourtDiagram: React.FC<CourtDiagramProps> = memo(({
         if (s.made) tpMade++
       }
     }
-    const pct = total > 0 ? Math.round((made / total) * 100) : 0
+    const pct = total > 0 ? Math.round((made / total) * 100) : null
     return {
       totalShots: total,
       madeShots: made,
@@ -113,14 +120,14 @@ export const CourtDiagram: React.FC<CourtDiagramProps> = memo(({
   const scoringRun = situation?.scoringRun
   const currentPeriodDetail = status?.type?.detail || gameStatusDetail
 
-  const awayRecords = extractRecordSummary(awayComp, summary?.awayTeam)
-  const homeRecords = extractRecordSummary(homeComp, summary?.homeTeam)
+  const awayRecords = extractRecordSummary(awayComp, validatedAwaySummary)
+  const homeRecords = extractRecordSummary(homeComp, validatedHomeSummary)
 
   const awayPostFg =
-    summary?.awayTeam?.stats?.fieldGoalPct ||
+    validatedAwaySummary?.stats?.fieldGoalPct ||
     awayComp?.statistics?.find((s) => s.name === 'fieldGoalPct')?.displayValue
   const homePostFg =
-    summary?.homeTeam?.stats?.fieldGoalPct ||
+    validatedHomeSummary?.stats?.fieldGoalPct ||
     homeComp?.statistics?.find((s) => s.name === 'fieldGoalPct')?.displayValue
 
   return (
@@ -156,16 +163,16 @@ export const CourtDiagram: React.FC<CourtDiagramProps> = memo(({
             </span>
           </div>
 
-          {gameState === 'pre' && summary?.seasonSeries && (
+          {gameState === 'pre' && safeSummary?.seasonSeries && (
             <span className="inline-flex items-center gap-1 rounded bg-sky-500/15 border border-sky-400/35 px-2 py-0.5 text-xs font-semibold text-sky-200">
-              {summary.seasonSeries}
+              {safeSummary.seasonSeries}
             </span>
           )}
 
-          {gameState === 'post' && (summary?.awayTeam?.stats?.leadChanges || summary?.homeTeam?.stats?.leadChanges) && (
+          {gameState === 'post' && (validatedAwaySummary?.stats?.leadChanges || validatedHomeSummary?.stats?.leadChanges) && (
             <span className="inline-flex items-center gap-1 rounded bg-emerald-500/15 border border-emerald-400/35 px-2 py-0.5 text-xs font-semibold text-emerald-200">
               <Trophy className="h-3 w-3 text-emerald-300 shrink-0" />
-              {summary.awayTeam?.stats?.leadChanges || summary.homeTeam?.stats?.leadChanges} Lead Changes
+              {validatedAwaySummary?.stats?.leadChanges || validatedHomeSummary?.stats?.leadChanges} Lead Changes
             </span>
           )}
 
@@ -220,7 +227,7 @@ export const CourtDiagram: React.FC<CourtDiagramProps> = memo(({
           {gameState === 'pre' && (
             <div className="hidden sm:flex items-center gap-2 text-xs">
               <span className="text-slate-300">
-                {awayAbbr}: <strong className="text-white">{awayRecords.overall}</strong>
+                {awayAbbr}: <strong className="text-white">{awayRecords.overall ?? '—'}</strong>
                 {awayRecords.streak && (
                   <span className={`ml-1 font-bold ${awayRecords.streak.startsWith('W') ? 'text-emerald-300' : 'text-rose-300'}`}>
                     ({awayRecords.streak})
@@ -229,7 +236,7 @@ export const CourtDiagram: React.FC<CourtDiagramProps> = memo(({
               </span>
               <span className="text-slate-500">|</span>
               <span className="text-slate-300">
-                {homeAbbr}: <strong className="text-white">{homeRecords.overall}</strong>
+                {homeAbbr}: <strong className="text-white">{homeRecords.overall ?? '—'}</strong>
                 {homeRecords.streak && (
                   <span className={`ml-1 font-bold ${homeRecords.streak.startsWith('W') ? 'text-emerald-300' : 'text-rose-300'}`}>
                     ({homeRecords.streak})
@@ -253,8 +260,8 @@ export const CourtDiagram: React.FC<CourtDiagramProps> = memo(({
                 </>
               ) : (
                 <span className="text-slate-300">
-                  Final: <strong className="text-white">{awayAbbr} {awayComp?.score ?? 0}</strong> –{' '}
-                  <strong className="text-white">{homeAbbr} {homeComp?.score ?? 0}</strong>
+                  Final: <strong className="text-white">{awayAbbr} {awayComp?.score ?? '—'}</strong> –{' '}
+                  <strong className="text-white">{homeAbbr} {homeComp?.score ?? '—'}</strong>
                 </span>
               )}
             </div>
@@ -263,10 +270,10 @@ export const CourtDiagram: React.FC<CourtDiagramProps> = memo(({
       </div>
 
       {/* Interactive Court & Matchup Intelligence Container */}
-      <div className="relative rounded-xl border border-white/[0.15] bg-[#080d1a] p-3 sm:p-4 overflow-hidden shadow-xl">
+      <div className="relative rounded-xl border border-white/[0.15] bg-[#080d1a] p-2 sm:p-4 overflow-hidden shadow-xl">
         {/* Controls & Mode Bar */}
         <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
-          {/* Left: View Mode Tabs (tailored per gameState) */}
+          {/* Left: View Mode Tabs (responsive 3-column grid on mobile so all modes stay 100% visible) */}
           {gameState === 'pre' ? (
             <div className="flex items-center gap-2">
               <span className="inline-flex items-center gap-1.5 rounded-lg bg-sky-500/20 border border-sky-400/40 px-2.5 py-1 text-xs font-bold text-sky-100">
@@ -275,39 +282,53 @@ export const CourtDiagram: React.FC<CourtDiagramProps> = memo(({
               </span>
             </div>
           ) : (
-            <div className="flex items-center rounded-lg bg-black/60 border border-white/[0.12] p-0.5 text-xs overflow-x-auto no-scrollbar">
+            <div
+              role="tablist"
+              aria-label="Court intelligence view modes"
+              data-testid="court-mode-tablist"
+              className="grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] gap-1 w-full sm:w-auto sm:inline-flex items-center rounded-lg bg-black/60 border border-white/[0.12] p-1 text-[11px] sm:text-xs"
+            >
               {gameState === 'post' ? (
                 <>
                   <button
+                    type="button"
+                    role="tab"
+                    aria-selected={viewMode === 'intel'}
                     onClick={() => setViewMode('intel')}
-                    className={`flex items-center gap-1 px-2 sm:px-2.5 py-1 rounded font-semibold transition-colors shrink-0 ${
+                    className={`flex items-center justify-center gap-1 px-1.5 sm:px-2.5 py-1.5 sm:py-1 rounded font-semibold transition-colors whitespace-nowrap min-w-0 ${
                       viewMode === 'intel'
                         ? 'bg-sky-500/30 text-sky-100 border border-sky-400/50'
-                        : 'text-slate-300 hover:text-white'
+                        : 'text-slate-300 hover:text-white border border-transparent'
                     }`}
                   >
                     <ClipboardList className="h-3 w-3 shrink-0" />
                     <span className="hidden sm:inline">Game Leaders & Stats</span>
-                    <span className="sm:hidden">Leaders & Stats</span>
+                    <span className="sm:hidden">Leaders</span>
                   </button>
                   <button
+                    type="button"
+                    role="tab"
+                    aria-selected={viewMode === 'shots'}
                     onClick={() => setViewMode('shots')}
-                    className={`flex items-center gap-1 px-2 sm:px-2.5 py-1 rounded font-semibold transition-colors shrink-0 ${
+                    className={`flex items-center justify-center gap-1 px-1.5 sm:px-2.5 py-1.5 sm:py-1 rounded font-semibold transition-colors whitespace-nowrap min-w-0 ${
                       viewMode === 'shots'
                         ? 'bg-sky-500/30 text-sky-100 border border-sky-400/50'
-                        : 'text-slate-300 hover:text-white'
+                        : 'text-slate-300 hover:text-white border border-transparent'
                     }`}
                   >
                     <Crosshair className="h-3 w-3 shrink-0" />
-                    <span className="hidden sm:inline">Shot Chart {effectiveShots.length > 0 ? `(${effectiveShots.length})` : ''}</span>
-                    <span className="sm:hidden">Shots {effectiveShots.length > 0 ? `(${effectiveShots.length})` : ''}</span>
+                    <span className="hidden sm:inline">Shot Chart{effectiveShots.length > 0 ? ` (${effectiveShots.length})` : ''}</span>
+                    <span className="sm:hidden">Shots{effectiveShots.length > 0 ? ` (${effectiveShots.length})` : ''}</span>
                   </button>
                   <button
+                    type="button"
+                    role="tab"
+                    aria-selected={viewMode === 'zones'}
                     onClick={() => setViewMode('zones')}
-                    className={`flex items-center gap-1 px-2 sm:px-2.5 py-1 rounded font-semibold transition-colors shrink-0 ${
+                    className={`flex items-center justify-center gap-1 px-1.5 sm:px-2.5 py-1.5 sm:py-1 rounded font-semibold transition-colors whitespace-nowrap min-w-0 ${
                       viewMode === 'zones'
-                        ? 'bg-sky-500/25 text-sky-200 border border-sky-400/30'
-                        : 'text-slate-400 hover:text-white'
+                        ? 'bg-sky-500/25 text-sky-200 border border-sky-400/40'
+                        : 'text-slate-300 hover:text-white border border-transparent'
                     }`}
                   >
                     <BarChart2 className="h-3 w-3 shrink-0" />
@@ -318,23 +339,29 @@ export const CourtDiagram: React.FC<CourtDiagramProps> = memo(({
               ) : (
                 <>
                   <button
+                    type="button"
+                    role="tab"
+                    aria-selected={viewMode === 'shots'}
                     onClick={() => setViewMode('shots')}
-                    className={`flex items-center gap-1 px-2 sm:px-2.5 py-1 rounded font-semibold transition-colors shrink-0 ${
+                    className={`flex items-center justify-center gap-1 px-1.5 sm:px-2.5 py-1.5 sm:py-1 rounded font-semibold transition-colors whitespace-nowrap min-w-0 ${
                       viewMode === 'shots'
                         ? 'bg-sky-500/30 text-sky-100 border border-sky-400/50'
-                        : 'text-slate-300 hover:text-white'
+                        : 'text-slate-300 hover:text-white border border-transparent'
                     }`}
                   >
                     <Crosshair className="h-3 w-3 shrink-0" />
                     <span className="hidden sm:inline">Live Shot Chart</span>
-                    <span className="sm:hidden">Shot Chart</span>
+                    <span className="sm:hidden">Shots</span>
                   </button>
                   <button
+                    type="button"
+                    role="tab"
+                    aria-selected={viewMode === 'zones'}
                     onClick={() => setViewMode('zones')}
-                    className={`flex items-center gap-1 px-2 sm:px-2.5 py-1 rounded font-semibold transition-colors shrink-0 ${
+                    className={`flex items-center justify-center gap-1 px-1.5 sm:px-2.5 py-1.5 sm:py-1 rounded font-semibold transition-colors whitespace-nowrap min-w-0 ${
                       viewMode === 'zones'
-                        ? 'bg-sky-500/25 text-sky-200 border border-sky-400/30'
-                        : 'text-slate-400 hover:text-white'
+                        ? 'bg-sky-500/25 text-sky-200 border border-sky-400/40'
+                        : 'text-slate-300 hover:text-white border border-transparent'
                     }`}
                   >
                     <BarChart2 className="h-3 w-3 shrink-0" />
@@ -342,15 +369,19 @@ export const CourtDiagram: React.FC<CourtDiagramProps> = memo(({
                     <span className="sm:hidden">Zones</span>
                   </button>
                   <button
+                    type="button"
+                    role="tab"
+                    aria-selected={viewMode === 'intel'}
                     onClick={() => setViewMode('intel')}
-                    className={`flex items-center gap-1 px-2 sm:px-2.5 py-1 rounded font-semibold transition-colors shrink-0 ${
+                    className={`flex items-center justify-center gap-1 px-1.5 sm:px-2.5 py-1.5 sm:py-1 rounded font-semibold transition-colors whitespace-nowrap min-w-0 ${
                       viewMode === 'intel'
                         ? 'bg-sky-500/30 text-sky-100 border border-sky-400/50'
-                        : 'text-slate-300 hover:text-white'
+                        : 'text-slate-300 hover:text-white border border-transparent'
                     }`}
                   >
                     <ClipboardList className="h-3 w-3 shrink-0" />
-                    <span>Box Leaders</span>
+                    <span className="hidden sm:inline">Box Leaders</span>
+                    <span className="sm:hidden">Leaders</span>
                   </button>
                 </>
               )}
@@ -359,10 +390,11 @@ export const CourtDiagram: React.FC<CourtDiagramProps> = memo(({
 
           {/* Middle: Shot Filters (Only in Shots Mode) */}
           {viewMode === 'shots' && gameState !== 'pre' && (
-            <div className="flex items-center gap-1 text-[11px]">
+            <div className="flex flex-wrap items-center gap-1 text-[11px]">
               {(['all', 'makes', 'misses', 'away', 'home'] as const).map((filterKey) => (
                 <button
                   key={filterKey}
+                  type="button"
                   onClick={() => setShotFilter(filterKey)}
                   className={`px-2 py-0.5 rounded capitalize font-medium transition-colors ${
                     shotFilter === filterKey
@@ -379,12 +411,12 @@ export const CourtDiagram: React.FC<CourtDiagramProps> = memo(({
           {/* Right: Contextual Summary Pill */}
           {gameState === 'pre' ? (
             <div className="flex items-center gap-2 font-mono text-[11px] text-slate-300">
-              {summary?.predictor ? (
+              {safeSummary?.predictor ? (
                 <span>
                   Matchup Model:{' '}
-                  <strong className="text-white">{awayAbbr} {summary.predictor.awayWinPct.toFixed(0)}%</strong>
+                  <strong className="text-white">{awayAbbr} {safeSummary.predictor.awayWinPct.toFixed(0)}%</strong>
                   <span className="text-slate-500 mx-1">/</span>
-                  <strong className="text-white">{homeAbbr} {summary.predictor.homeWinPct.toFixed(0)}%</strong>
+                  <strong className="text-white">{homeAbbr} {safeSummary.predictor.homeWinPct.toFixed(0)}%</strong>
                 </span>
               ) : (
                 <span>Season Leaders & Team Splits</span>
@@ -393,22 +425,28 @@ export const CourtDiagram: React.FC<CourtDiagramProps> = memo(({
           ) : viewMode === 'intel' ? (
             <div className="flex items-center gap-2 font-mono text-[11px] text-slate-300">
               <span>
-                {awayAbbr}: <strong className="text-white">{awayComp?.score ?? '-'}</strong>
+                {awayAbbr}: <strong className="text-white">{awayComp?.score ?? '—'}</strong>
               </span>
               <span className="text-slate-600">|</span>
               <span>
-                {homeAbbr}: <strong className="text-white">{homeComp?.score ?? '-'}</strong>
+                {homeAbbr}: <strong className="text-white">{homeComp?.score ?? '—'}</strong>
               </span>
             </div>
           ) : (
             <div className="flex items-center gap-2 font-mono text-[11px] text-slate-300">
-              <span>
-                FG: <strong className="text-emerald-400">{fgPct}%</strong> ({madeShots}/{totalShots})
-              </span>
-              <span className="text-slate-600">|</span>
-              <span>
-                3PT: <strong className="text-sky-400">{threePointersMade}/{threePointersTotal}</strong>
-              </span>
+              {totalShots > 0 && fgPct !== null ? (
+                <>
+                  <span>
+                    Tracked Shots: <strong className="text-emerald-400">{fgPct}%</strong> ({madeShots}/{totalShots})
+                  </span>
+                  <span className="text-slate-600">|</span>
+                  <span>
+                    3PT: <strong className="text-sky-400">{threePointersMade}/{threePointersTotal}</strong>
+                  </span>
+                </>
+              ) : (
+                <span className="text-slate-400">Tracked Shots: —</span>
+              )}
             </div>
           )}
         </div>
@@ -418,7 +456,7 @@ export const CourtDiagram: React.FC<CourtDiagramProps> = memo(({
           <CourtMatchupIntel
             awayComp={awayComp}
             homeComp={homeComp}
-            summary={summary}
+            summary={safeSummary}
             gameState={gameState}
             isSummaryLoading={isSummaryLoading}
           />
@@ -781,6 +819,66 @@ export const CourtDiagram: React.FC<CourtDiagramProps> = memo(({
                   })}
               </svg>
             </div>
+
+            {/* Companion Readable Shooting Zones Cards (ensures legible typography at narrow mobile widths) */}
+            {viewMode === 'zones' && (
+              <div
+                data-testid="zone-breakdown-grid"
+                className="mt-3 grid grid-cols-2 sm:grid-cols-4 gap-2"
+              >
+                {[
+                  {
+                    key: 'paint',
+                    label: 'Paint',
+                    borderClass: 'border-emerald-500/40',
+                    accentClass: 'text-emerald-300',
+                    zone: zoneSummary.paint,
+                  },
+                  {
+                    key: 'midRange',
+                    label: 'Mid-Range',
+                    borderClass: 'border-amber-500/40',
+                    accentClass: 'text-amber-300',
+                    zone: zoneSummary.midRange,
+                  },
+                  {
+                    key: 'corner3',
+                    label: 'Corner 3',
+                    borderClass: 'border-blue-500/40',
+                    accentClass: 'text-blue-300',
+                    zone: zoneSummary.corner3,
+                  },
+                  {
+                    key: 'aboveBreak3',
+                    label: 'Above Break 3',
+                    borderClass: 'border-sky-500/40',
+                    accentClass: 'text-sky-300',
+                    zone: zoneSummary.aboveBreak3,
+                  },
+                ].map((item) => (
+                  <div
+                    key={item.key}
+                    data-testid="zone-stat-card"
+                    className={`rounded-lg border ${item.borderClass} bg-[#0c1424]/95 px-3 py-2 text-center shadow-sm`}
+                  >
+                    <span className="block text-[11px] font-bold uppercase tracking-wider text-slate-300">
+                      {item.label}
+                    </span>
+                    <span
+                      data-testid="zone-card-pct"
+                      className={`mt-0.5 block font-['Oswald'] text-lg sm:text-xl font-bold tabular-nums leading-tight ${
+                        item.zone.total > 0 ? item.accentClass : 'text-slate-500'
+                      }`}
+                    >
+                      {item.zone.total > 0 ? item.zone.pct : '—'}
+                    </span>
+                    <span className="block font-mono text-[11px] text-slate-400 tabular-nums mt-0.5">
+                      {item.zone.total > 0 ? `${item.zone.made}/${item.zone.total} FGM` : 'No tracked shots'}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
 
             {/* Selected Shot Detail Card Overlay */}
             {selectedShot && (

@@ -5,6 +5,7 @@ import {
   extractRecordSummary,
   extractStatLeaders,
   extractTeamComparisonRows,
+  getValidatedTeamSummary,
   type NormalizedStatLeader,
 } from '../utils/matchupStats'
 import {
@@ -15,6 +16,7 @@ import {
   Activity,
   Shield,
   Users,
+  Clock,
 } from 'lucide-react'
 
 interface CourtMatchupIntelProps {
@@ -194,13 +196,14 @@ const TeamScoutingPanel: React.FC<{
   gameState: 'pre' | 'in' | 'post' | string
 }> = ({ side, comp, teamSummary, accentColor, gameState }) => {
   const isPre = gameState === 'pre'
+  const validatedSummary = getValidatedTeamSummary(teamSummary, comp)
   const teamName = comp?.team?.displayName || comp?.team?.name || (side === 'away' ? 'Away Team' : 'Home Team')
   const abbr = (comp?.team?.abbreviation || (side === 'away' ? 'AWAY' : 'HOME')).slice(0, 6)
-  const records = extractRecordSummary(comp, teamSummary)
-  const leaders = extractStatLeaders(comp, teamSummary, gameState)
-  const topPlayers = teamSummary?.topPlayers || []
-  const lastFive = teamSummary?.lastFiveGames || []
-  const injuries = teamSummary?.injuries || []
+  const records = extractRecordSummary(comp, validatedSummary)
+  const leaders = extractStatLeaders(comp, validatedSummary, gameState)
+  const topPlayers = validatedSummary?.topPlayers || []
+  const lastFive = validatedSummary?.lastFiveGames || []
+  const injuries = validatedSummary?.injuries || []
   const isWinner = comp?.winner === true
 
   return (
@@ -208,7 +211,7 @@ const TeamScoutingPanel: React.FC<{
       {/* Team Color Top Accent Strip */}
       <div className="h-1 w-full" style={{ backgroundColor: accentColor }} />
 
-      <div className="p-3 sm:p-3.5 flex-1 flex flex-col justify-between space-y-3">
+      <div className="p-2.5 sm:p-3.5 flex-1 flex flex-col justify-between space-y-3">
         <div className="space-y-3">
           {/* Team Identity & Record Header */}
           <div className="flex items-start justify-between gap-2 border-b border-white/[0.08] pb-2.5">
@@ -232,7 +235,11 @@ const TeamScoutingPanel: React.FC<{
 
                 {/* Win-Loss & Splits Strip */}
                 <div className="flex flex-wrap items-center gap-1.5 mt-1 text-[11px] font-mono text-slate-300">
-                  <span className="font-bold text-white">{records.overall}</span>
+                  {records.overall ? (
+                    <span className="font-bold text-white">{records.overall}</span>
+                  ) : (
+                    <span className="text-slate-400">Record —</span>
+                  )}
                   {side === 'away' && records.road && (
                     <span className="text-slate-400">• Road: {records.road}</span>
                   )}
@@ -370,39 +377,68 @@ const TeamScoutingPanel: React.FC<{
                 <table className="w-full text-[11px] font-mono">
                   <thead>
                     <tr className="text-[10px] text-slate-400 border-b border-white/[0.08]">
-                      <th className="text-left py-1 pr-2 font-semibold">PLAYER</th>
-                      <th className="text-right py-1 px-1 font-semibold">PTS</th>
-                      <th className="text-right py-1 px-1 font-semibold">REB</th>
-                      <th className="text-right py-1 px-1 font-semibold">AST</th>
-                      <th className="text-right py-1 px-1 font-semibold">FG</th>
-                      <th className="text-right py-1 pl-1 font-semibold">+/-</th>
+                      <th className="text-left py-1 pr-2 font-semibold whitespace-nowrap">PLAYER</th>
+                      <th className="text-right py-1 px-1 font-semibold whitespace-nowrap">PTS</th>
+                      <th className="text-right py-1 px-1 font-semibold whitespace-nowrap">REB</th>
+                      <th className="text-right py-1 px-1 font-semibold whitespace-nowrap">AST</th>
+                      <th className="text-right py-1 px-1 font-semibold whitespace-nowrap">FG</th>
+                      <th className="text-right py-1 pl-1 font-semibold whitespace-nowrap">+/-</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-white/[0.05]">
-                    {topPlayers.slice(0, 4).map((p) => (
-                      <tr key={`${abbr}-box-${p.id}`} className="hover:bg-white/[0.03]">
-                        <td className="py-1.5 pr-2 font-sans font-semibold text-slate-100 truncate max-w-[110px]">
-                          {p.shortName}
-                        </td>
-                        <td className={`py-1.5 px-1 text-right font-bold tabular-nums ${p.pts >= 20 ? 'text-amber-300' : 'text-white'}`}>
-                          {p.pts}
-                        </td>
-                        <td className="py-1.5 px-1 text-right text-slate-200 tabular-nums">{p.reb}</td>
-                        <td className="py-1.5 px-1 text-right text-slate-200 tabular-nums">{p.ast}</td>
-                        <td className="py-1.5 px-1 text-right text-slate-300 tabular-nums">{p.fg}</td>
-                        <td
-                          className={`py-1.5 pl-1 text-right font-semibold tabular-nums ${
-                            p.plusMinus.startsWith('+')
-                              ? 'text-emerald-300'
-                              : p.plusMinus.startsWith('-')
-                              ? 'text-rose-300'
-                              : 'text-slate-300'
-                          }`}
-                        >
-                          {p.plusMinus}
-                        </td>
-                      </tr>
-                    ))}
+                    {topPlayers.slice(0, 4).map((p) => {
+                      const pm = p.plusMinus
+                      const pmClass =
+                        pm === null
+                          ? 'font-normal text-slate-500'
+                          : pm.startsWith('+')
+                          ? 'font-semibold text-emerald-300'
+                          : pm.startsWith('-')
+                          ? 'font-semibold text-rose-300'
+                          : 'font-semibold text-slate-300'
+                      return (
+                        <tr key={`${abbr}-box-${p.id}`} className="hover:bg-white/[0.03]">
+                          <td className="py-1.5 pr-1.5 font-sans font-semibold text-slate-100 truncate max-w-[96px] sm:max-w-[125px]">
+                            {p.shortName}
+                          </td>
+                          <td
+                            className={`py-1.5 px-1 text-right tabular-nums whitespace-nowrap ${
+                              p.pts === null
+                                ? 'font-normal text-slate-500'
+                                : p.pts >= 20
+                                ? 'font-bold text-amber-300'
+                                : 'font-bold text-white'
+                            }`}
+                          >
+                            {p.pts === null ? '—' : p.pts}
+                          </td>
+                          <td
+                            className={`py-1.5 px-1 text-right tabular-nums whitespace-nowrap ${
+                              p.reb === null ? 'text-slate-500' : 'text-slate-200'
+                            }`}
+                          >
+                            {p.reb === null ? '—' : p.reb}
+                          </td>
+                          <td
+                            className={`py-1.5 px-1 text-right tabular-nums whitespace-nowrap ${
+                              p.ast === null ? 'text-slate-500' : 'text-slate-200'
+                            }`}
+                          >
+                            {p.ast === null ? '—' : p.ast}
+                          </td>
+                          <td
+                            className={`py-1.5 px-1 text-right tabular-nums whitespace-nowrap ${
+                              p.fg === null ? 'text-slate-500' : 'text-slate-300'
+                            }`}
+                          >
+                            {p.fg === null ? '—' : p.fg}
+                          </td>
+                          <td className={`py-1.5 pl-1 text-right tabular-nums whitespace-nowrap ${pmClass}`}>
+                            {pm === null ? '—' : pm}
+                          </td>
+                        </tr>
+                      )
+                    })}
                   </tbody>
                 </table>
               </div>
@@ -441,18 +477,37 @@ export const CourtMatchupIntel: React.FC<CourtMatchupIntelProps> = memo(({
   const awayAbbr = awayComp?.team?.abbreviation || 'AWAY'
   const homeAbbr = homeComp?.team?.abbreviation || 'HOME'
 
+  const normalizedViewState = gameState === 'in' || gameState === 'post' ? gameState : 'pre'
+  const hasMismatchedSummaryState = Boolean(
+    summary?.gameState &&
+      (summary.gameState === 'in' || summary.gameState === 'post' ? summary.gameState : 'pre') !==
+        normalizedViewState
+  )
+  const stateCompatibleSummary = hasMismatchedSummaryState ? null : summary
+
+  const validatedAwaySummary = getValidatedTeamSummary(stateCompatibleSummary?.awayTeam, awayComp)
+  const validatedHomeSummary = getValidatedTeamSummary(stateCompatibleSummary?.homeTeam, homeComp)
+
+  // If summary teams were provided but failed validation against either competitor, reject event-level summary metadata too
+  const hasMismatchedSummaryTeam =
+    (Boolean(stateCompatibleSummary?.awayTeam) && !validatedAwaySummary) ||
+    (Boolean(stateCompatibleSummary?.homeTeam) && !validatedHomeSummary)
+  const safeSummary = hasMismatchedSummaryTeam ? null : stateCompatibleSummary
+
   const { rows, highlights } = extractTeamComparisonRows(
     awayComp,
     homeComp,
-    summary?.awayTeam,
-    summary?.homeTeam,
+    validatedAwaySummary,
+    validatedHomeSummary,
     gameState
   )
 
-  const leadChanges = summary?.awayTeam?.stats?.leadChanges || summary?.homeTeam?.stats?.leadChanges
+  const leadChanges = validatedAwaySummary?.stats?.leadChanges || validatedHomeSummary?.stats?.leadChanges
+  const showStaleBanner = Boolean(safeSummary && (safeSummary.isStale || safeSummary.provenance === 'stale-cache'))
+  const showDemoBanner = Boolean(safeSummary && safeSummary.provenance === 'demo')
 
   return (
-    <div className="relative rounded-xl overflow-hidden border border-white/[0.1] bg-[#060b14] p-2.5 sm:p-3.5">
+    <div className="relative rounded-xl overflow-hidden border border-white/[0.1] bg-[#060b14] p-2 sm:p-3.5">
       {/* Subtle Hardwood Court Lines Watermark Backdrop */}
       <svg
         viewBox="0 0 940 500"
@@ -469,6 +524,21 @@ export const CourtMatchupIntel: React.FC<CourtMatchupIntelProps> = memo(({
         <path d="M 920,50 L 800,50 A 237.5,237.5 0 0,0 800,450 L 920,450" fill="none" stroke="#ffffff" strokeWidth="2.5" />
       </svg>
 
+      {/* Honest Provenance Strip for Stale Cache or Demo Fixtures */}
+      {(showStaleBanner || showDemoBanner) && (
+        <div
+          data-testid="summary-provenance-banner"
+          className="relative z-10 mb-2.5 flex items-center justify-between gap-2 rounded-lg border border-amber-400/40 bg-amber-500/15 px-3 py-1.5 text-[11px] font-semibold text-amber-200"
+        >
+          <span className="flex items-center gap-1.5">
+            <Clock className="h-3.5 w-3.5 text-amber-300 shrink-0" />
+            {showDemoBanner
+              ? 'Demo Mode: Displaying sample fixture data (not live ESPN telemetry)'
+              : 'Showing cached summary — refresh pending'}
+          </span>
+        </div>
+      )}
+
       {/* Symmetrical 3-Column Court-Side Intelligence Grid */}
       <div className="relative z-10 grid grid-cols-1 lg:grid-cols-12 gap-3.5 items-stretch">
         {/* Left Side of Court: Away Team */}
@@ -476,14 +546,14 @@ export const CourtMatchupIntel: React.FC<CourtMatchupIntelProps> = memo(({
           <TeamScoutingPanel
             side="away"
             comp={awayComp}
-            teamSummary={summary?.awayTeam}
+            teamSummary={validatedAwaySummary}
             accentColor={awayColor}
             gameState={gameState}
           />
         </div>
 
         {/* Center Court: Tale of the Tape / Team Box Comparison */}
-        <div className="lg:col-span-4 flex flex-col rounded-xl border border-white/[0.12] bg-[#0c1424]/95 p-3 sm:p-3.5 shadow-lg justify-between space-y-3">
+        <div className="lg:col-span-4 flex flex-col rounded-xl border border-white/[0.12] bg-[#0c1424]/95 p-2.5 sm:p-3.5 shadow-lg justify-between space-y-3">
           <div className="space-y-3">
             {/* Comparison Header */}
             <div className="flex items-center justify-between border-b border-white/[0.08] pb-2.5">
@@ -503,66 +573,92 @@ export const CourtMatchupIntel: React.FC<CourtMatchupIntelProps> = memo(({
             {/* Mirrored Comparison Bars */}
             {rows.length > 0 ? (
               <div className="space-y-2.5">
-                {rows.map((row) => (
-                  <div key={row.key} className="space-y-1">
-                    <div className="flex items-center justify-between gap-2 text-xs font-mono">
-                      <div className="flex items-center gap-1 min-w-0">
-                        <span
-                          className={`tabular-nums ${
-                            row.leaderSide === 'away' ? 'font-black text-white' : 'font-medium text-slate-300'
-                          }`}
-                        >
-                          {row.awayDisplay}
-                        </span>
-                        {row.awayRank && (
-                          <span className="text-[9px] px-1 rounded bg-white/[0.08] text-amber-300 font-bold">
-                            #{row.awayRank.replace(/[^0-9A-Za-z-]/g, '')}
+                {rows.map((row) => {
+                  const isPartial = Boolean(
+                    row.isPartial || row.awaySharePct === null || row.homeSharePct === null
+                  )
+                  return (
+                    <div
+                      key={row.key}
+                      data-row-key={row.key}
+                      data-leader-side={row.leaderSide}
+                      data-partial={isPartial ? 'true' : 'false'}
+                      className="space-y-1"
+                    >
+                      <div className="flex items-center justify-between gap-2 text-xs font-mono">
+                        <div className="flex items-center gap-1 min-w-0">
+                          <span
+                            className={`tabular-nums ${
+                              row.awayValue === null
+                                ? 'font-normal text-slate-500'
+                                : row.leaderSide === 'away'
+                                ? 'font-black text-white'
+                                : 'font-medium text-slate-300'
+                            }`}
+                          >
+                            {row.awayDisplay}
                           </span>
-                        )}
+                          {row.awayRank && (
+                            <span className="text-[9px] px-1 rounded bg-white/[0.08] text-amber-300 font-bold">
+                              #{row.awayRank.replace(/[^0-9A-Za-z-]/g, '')}
+                            </span>
+                          )}
+                        </div>
+
+                        <span className="font-sans text-[10px] font-bold uppercase tracking-wider text-slate-400 text-center shrink-0">
+                          {row.label}
+                        </span>
+
+                        <div className="flex items-center gap-1 min-w-0 justify-end">
+                          {row.homeRank && (
+                            <span className="text-[9px] px-1 rounded bg-white/[0.08] text-amber-300 font-bold">
+                              #{row.homeRank.replace(/[^0-9A-Za-z-]/g, '')}
+                            </span>
+                          )}
+                          <span
+                            className={`tabular-nums ${
+                              row.homeValue === null
+                                ? 'font-normal text-slate-500'
+                                : row.leaderSide === 'home'
+                                ? 'font-black text-white'
+                                : 'font-medium text-slate-300'
+                            }`}
+                          >
+                            {row.homeDisplay}
+                          </span>
+                        </div>
                       </div>
 
-                      <span className="font-sans text-[10px] font-bold uppercase tracking-wider text-slate-400 text-center shrink-0">
-                        {row.label}
-                      </span>
-
-                      <div className="flex items-center gap-1 min-w-0 justify-end">
-                        {row.homeRank && (
-                          <span className="text-[9px] px-1 rounded bg-white/[0.08] text-amber-300 font-bold">
-                            #{row.homeRank.replace(/[^0-9A-Za-z-]/g, '')}
-                          </span>
-                        )}
-                        <span
-                          className={`tabular-nums ${
-                            row.leaderSide === 'home' ? 'font-black text-white' : 'font-medium text-slate-300'
-                          }`}
-                        >
-                          {row.homeDisplay}
-                        </span>
-                      </div>
+                      {/* Split Comparison Meter (omits fabricated split when either side is unavailable) */}
+                      {isPartial ? (
+                        <div
+                          className="h-1.5 w-full rounded-full bg-slate-900/90 border border-dashed border-white/[0.14]"
+                          title="Partial data — comparison unavailable"
+                        />
+                      ) : (
+                        <div className="flex h-1.5 w-full overflow-hidden rounded-full bg-slate-900/90 border border-white/[0.08]">
+                          <div
+                            className="h-full transition-all duration-500"
+                            style={{
+                              width: `${row.awaySharePct}%`,
+                              backgroundColor: awayColor,
+                              opacity: row.leaderSide === 'home' ? 0.45 : 0.95,
+                            }}
+                          />
+                          <div className="w-[2px] bg-[#060b14] shrink-0" />
+                          <div
+                            className="h-full transition-all duration-500"
+                            style={{
+                              width: `${row.homeSharePct}%`,
+                              backgroundColor: homeColor,
+                              opacity: row.leaderSide === 'away' ? 0.45 : 0.95,
+                            }}
+                          />
+                        </div>
+                      )}
                     </div>
-
-                    {/* Split Comparison Meter */}
-                    <div className="flex h-1.5 w-full overflow-hidden rounded-full bg-slate-900/90 border border-white/[0.08]">
-                      <div
-                        className="h-full transition-all duration-500"
-                        style={{
-                          width: `${row.awaySharePct}%`,
-                          backgroundColor: awayColor,
-                          opacity: row.leaderSide === 'home' ? 0.45 : 0.95,
-                        }}
-                      />
-                      <div className="w-[2px] bg-[#060b14] shrink-0" />
-                      <div
-                        className="h-full transition-all duration-500"
-                        style={{
-                          width: `${row.homeSharePct}%`,
-                          backgroundColor: homeColor,
-                          opacity: row.leaderSide === 'away' ? 0.45 : 0.95,
-                        }}
-                      />
-                    </div>
-                  </div>
-                ))}
+                  )
+                })}
               </div>
             ) : (
               <div className="rounded-lg border border-white/[0.06] bg-black/25 p-4 text-center text-xs text-slate-400">
@@ -574,15 +670,18 @@ export const CourtMatchupIntel: React.FC<CourtMatchupIntelProps> = memo(({
           {/* Bottom Center Highlights: Pre-game Defense/Series/Predictor OR Post-Game Paint/Fastbreak */}
           {isPre ? (
             <div className="space-y-2 pt-2 border-t border-white/[0.08]">
-              {(summary?.awayTeam?.stats?.avgSteals || summary?.awayTeam?.stats?.avgBlocks) && (
+              {(validatedAwaySummary?.stats?.avgSteals ||
+                validatedHomeSummary?.stats?.avgSteals ||
+                validatedAwaySummary?.stats?.avgBlocks ||
+                validatedHomeSummary?.stats?.avgBlocks) && (
                 <div className="grid grid-cols-2 gap-2 text-center">
                   <div className="rounded-lg bg-black/30 border border-white/[0.06] px-2 py-1.5">
                     <span className="block text-[9px] font-bold uppercase tracking-wider text-slate-400">
                       Steals / Game
                     </span>
                     <span className="font-mono text-xs font-bold text-slate-200 tabular-nums">
-                      {summary.awayTeam?.stats?.avgSteals ?? '-'} <span className="text-slate-500">vs</span>{' '}
-                      {summary.homeTeam?.stats?.avgSteals ?? '-'}
+                      {validatedAwaySummary?.stats?.avgSteals ?? '—'} <span className="text-slate-500">vs</span>{' '}
+                      {validatedHomeSummary?.stats?.avgSteals ?? '—'}
                     </span>
                   </div>
                   <div className="rounded-lg bg-black/30 border border-white/[0.06] px-2 py-1.5">
@@ -590,32 +689,32 @@ export const CourtMatchupIntel: React.FC<CourtMatchupIntelProps> = memo(({
                       Blocks / Game
                     </span>
                     <span className="font-mono text-xs font-bold text-slate-200 tabular-nums">
-                      {summary.awayTeam?.stats?.avgBlocks ?? '-'} <span className="text-slate-500">vs</span>{' '}
-                      {summary.homeTeam?.stats?.avgBlocks ?? '-'}
+                      {validatedAwaySummary?.stats?.avgBlocks ?? '—'} <span className="text-slate-500">vs</span>{' '}
+                      {validatedHomeSummary?.stats?.avgBlocks ?? '—'}
                     </span>
                   </div>
                 </div>
               )}
 
-              {(summary?.seasonSeries || summary?.predictor) && (
+              {(safeSummary?.seasonSeries || safeSummary?.predictor) && (
                 <div className="rounded-lg bg-black/35 border border-white/[0.08] p-2.5 text-xs space-y-1">
-                  {summary.seasonSeries && (
+                  {safeSummary.seasonSeries && (
                     <div className="flex items-center justify-between gap-2">
                       <span className="flex items-center gap-1 text-[10px] font-bold uppercase tracking-wider text-slate-400">
                         <Shield className="h-3 w-3 text-sky-400" />
                         Season Series
                       </span>
-                      <span className="font-semibold text-slate-100 text-[11px]">{summary.seasonSeries}</span>
+                      <span className="font-semibold text-slate-100 text-[11px]">{safeSummary.seasonSeries}</span>
                     </div>
                   )}
-                  {summary.predictor && (
+                  {safeSummary.predictor && (
                     <div className="flex items-center justify-between gap-2">
                       <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
                         ESPN Matchup Odds
                       </span>
                       <span className="font-mono text-[11px] font-bold text-amber-300 tabular-nums">
-                        {awayAbbr} {summary.predictor.awayWinPct.toFixed(1)}% • {homeAbbr}{' '}
-                        {summary.predictor.homeWinPct.toFixed(1)}%
+                        {awayAbbr} {safeSummary.predictor.awayWinPct.toFixed(1)}% • {homeAbbr}{' '}
+                        {safeSummary.predictor.homeWinPct.toFixed(1)}%
                       </span>
                     </div>
                   )}
@@ -623,24 +722,42 @@ export const CourtMatchupIntel: React.FC<CourtMatchupIntelProps> = memo(({
               )}
             </div>
           ) : (
-            (highlights.length > 0 || leadChanges || summary?.attendance) && (
+            (highlights.length > 0 || leadChanges || safeSummary?.attendance) && (
               <div className="space-y-2 pt-2 border-t border-white/[0.08]">
                 {highlights.length > 0 && (
                   <div className="grid grid-cols-2 gap-2">
                     {highlights.map((h) => (
                       <div
                         key={h.key}
-                        className="rounded-lg bg-black/35 border border-white/[0.08] px-2.5 py-1.5 text-center"
+                        data-highlight-key={h.key}
+                        data-leader-side={h.leaderSide}
+                        className="rounded-lg bg-black/35 border border-white/[0.08] px-2 py-1.5 text-center"
                       >
                         <span className="block text-[9px] font-bold uppercase tracking-wider text-slate-400">
                           {h.label}
                         </span>
                         <div className="mt-0.5 flex items-center justify-center gap-1.5 font-mono text-xs tabular-nums">
-                          <span className={h.leaderSide === 'away' ? 'font-black text-white' : 'text-slate-400'}>
+                          <span
+                            className={
+                              h.awayValue === null
+                                ? 'text-slate-500'
+                                : h.leaderSide === 'away'
+                                ? 'font-black text-white'
+                                : 'text-slate-400'
+                            }
+                          >
                             {h.awayDisplay}
                           </span>
                           <span className="text-slate-600 text-[10px]">vs</span>
-                          <span className={h.leaderSide === 'home' ? 'font-black text-white' : 'text-slate-400'}>
+                          <span
+                            className={
+                              h.homeValue === null
+                                ? 'text-slate-500'
+                                : h.leaderSide === 'home'
+                                ? 'font-black text-white'
+                                : 'text-slate-400'
+                            }
+                          >
                             {h.homeDisplay}
                           </span>
                         </div>
@@ -649,17 +766,17 @@ export const CourtMatchupIntel: React.FC<CourtMatchupIntelProps> = memo(({
                   </div>
                 )}
 
-                {(leadChanges || summary?.attendance) && (
+                {(leadChanges || safeSummary?.attendance) && (
                   <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg bg-black/30 border border-white/[0.06] px-2.5 py-1.5 text-[11px] font-mono text-slate-300">
                     {leadChanges && (
                       <span>
                         Lead Changes: <strong className="text-white">{leadChanges}</strong>
                       </span>
                     )}
-                    {summary?.attendance && (
+                    {safeSummary?.attendance && (
                       <span className="flex items-center gap-1 ml-auto">
                         <Users className="h-3 w-3 text-slate-400" />
-                        <strong className="text-white">{summary.attendance.toLocaleString()}</strong>
+                        <strong className="text-white">{safeSummary.attendance.toLocaleString()}</strong>
                       </span>
                     )}
                   </div>
@@ -674,7 +791,7 @@ export const CourtMatchupIntel: React.FC<CourtMatchupIntelProps> = memo(({
           <TeamScoutingPanel
             side="home"
             comp={homeComp}
-            teamSummary={summary?.homeTeam}
+            teamSummary={validatedHomeSummary}
             accentColor={homeColor}
             gameState={gameState}
           />

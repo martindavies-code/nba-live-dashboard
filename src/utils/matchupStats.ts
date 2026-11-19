@@ -1,14 +1,16 @@
 import type {
   NBACompetitor,
+  NBACompetitorStat,
   NBALeader,
   NBAShot,
   NBATeamSummary,
   NBAPlayerBoxLine,
 } from '../types/nba'
 import { sanitizeImageUrl } from './nbaHelpers.ts'
+import { normalizeTeamAbbr } from './announcers.ts'
 
 export interface TeamRecordBreakdown {
-  overall: string
+  overall: string | null
   home?: string
   road?: string
   streak?: string
@@ -36,14 +38,15 @@ export interface TeamComparisonRow {
   label: string
   awayDisplay: string
   homeDisplay: string
-  awayValue: number
-  homeValue: number
+  awayValue: number | null
+  homeValue: number | null
   awayRank?: string
   homeRank?: string
   lowerIsBetter?: boolean
-  awaySharePct: number
-  homeSharePct: number
-  leaderSide: 'away' | 'home' | 'tie'
+  awaySharePct: number | null
+  homeSharePct: number | null
+  leaderSide: 'away' | 'home' | 'tie' | 'none'
+  isPartial?: boolean
 }
 
 export interface GameHighlightMetric {
@@ -51,9 +54,11 @@ export interface GameHighlightMetric {
   label: string
   awayDisplay: string
   homeDisplay: string
-  awayValue: number
-  homeValue: number
-  leaderSide: 'away' | 'home' | 'tie'
+  awayValue: number | null
+  homeValue: number | null
+  lowerIsBetter?: boolean
+  leaderSide: 'away' | 'home' | 'tie' | 'none'
+  isPartial?: boolean
 }
 
 export interface ShootingZoneSummary {
@@ -64,6 +69,45 @@ export interface ShootingZoneSummary {
 }
 
 const MISSING_IMAGE_SENTINEL = 'https://invalid.local/__missing__'
+const STRICT_NUMBER_REGEX = /^[+-]?(?:\d+\.?\d*|\.\d+)%?$/
+
+/**
+ * Validates that a team summary belongs to the given scoreboard competitor (team ID and normalized abbreviation).
+ */
+export function isTeamSummaryMatchingCompetitor(
+  teamSummary: NBATeamSummary | null | undefined,
+  competitor: NBACompetitor | undefined
+): boolean {
+  if (!teamSummary) return false
+  if (!competitor) return true
+
+  const compTeamId = competitor.team?.id ? String(competitor.team.id) : competitor.id ? String(competitor.id) : ''
+  const sumTeamId = teamSummary.teamId ? String(teamSummary.teamId) : ''
+  if (compTeamId && sumTeamId && compTeamId !== sumTeamId) {
+    return false
+  }
+
+  const compAbbr = competitor.team?.abbreviation ? normalizeTeamAbbr(competitor.team.abbreviation) : ''
+  const sumAbbr =
+    teamSummary.abbreviation &&
+    teamSummary.abbreviation !== 'HOME' &&
+    teamSummary.abbreviation !== 'AWAY'
+      ? normalizeTeamAbbr(teamSummary.abbreviation)
+      : ''
+
+  if (compAbbr && sumAbbr && compAbbr !== sumAbbr) {
+    return false
+  }
+
+  return true
+}
+
+export function getValidatedTeamSummary(
+  teamSummary: NBATeamSummary | null | undefined,
+  competitor: NBACompetitor | undefined
+): NBATeamSummary | null {
+  return isTeamSummaryMatchingCompetitor(teamSummary, competitor) ? (teamSummary ?? null) : null
+}
 
 /**
  * Safely extracts and validates a player headshot URL (handles string or { href } shapes).
@@ -80,64 +124,204 @@ export function extractHeadshotUrl(headshot: unknown): string {
   return sanitized === MISSING_IMAGE_SENTINEL ? '' : sanitized
 }
 
-function parseStatNumber(val: unknown): number {
-  if (typeof val === 'number') return Number.isFinite(val) ? val : 0
-  if (typeof val !== 'string') return 0
-  const cleaned = val.replace(/[^0-9.-]/g, '')
-  const parsed = parseFloat(cleaned)
-  return Number.isFinite(parsed) ? parsed : 0
+/**
+ * Strictly parses a numeric stat value while preserving genuine zero and returning null for
+ * missing, placeholder ('-', '--', '—', 'N/A'), non-finite, or malformed strings ('12-34').
+ */
+export function parseStatNumber(val: unknown): number | null {
+  if (typeof val === 'number') return Number.isFinite(val) ? val : null
+  if (typeof val !== 'string') return null
+  const trimmed = val.trim()
+  if (!trimmed || !STRICT_NUMBER_REGEX.test(trimmed)) return null
+  const parsed = Number(trimmed.endsWith('%') ? trimmed.slice(0, -1) : trimmed)
+  return Number.isFinite(parsed) ? parsed : null
 }
 
-function formatPctDisplay(val?: string): string {
-  if (!val) return '-'
+function formatPctDisplay(val?: string | number | null): string {
   const num = parseStatNumber(val)
-  if (!Number.isFinite(num)) return '-'
+  if (num === null) return '—'
   return `${num % 1 === 0 ? num.toFixed(0) : num.toFixed(1)}%`
 }
 
-function findCompetitorStat(comp?: NBACompetitor, names: string[] = []): { displayValue: string; rank?: string } | null {
+function formatNumericDisplay(rawVal: string | undefined, parsed: number | null): string {
+  if (parsed === null) return '—'
+  if (typeof rawVal === 'string' && rawVal.trim()) {
+    return rawVal.trim()
+  }
+  return String(parsed)
+}
+
+function findCompetitorStat(comp?: NBACompetitor, names: string[] = []): NBACompetitorStat | null {
   if (!comp?.statistics) return null
   for (const name of names) {
     const found = comp.statistics.find((s) => s.name === name)
-    if (found && found.displayValue) {
-      return { displayValue: found.displayValue, rank: found.rankDisplayValue }
+    if (found && found.displayValue !== undefined && found.displayValue !== null && String(found.displayValue).trim()) {
+      return found
     }
   }
   return null
 }
 
+function parseRankOrdinal(rank?: string): number | null {
+  if (!rank) return null
+  const m = rank.trim().match(/^#?(\d+)/)
+  if (!m) return null
+  const n = parseInt(m[1], 10)
+  return Number.isFinite(n) && n > 0 ? n : null
+}
+
+/**
+ * Extracts verified ranks ONLY when attached to the exact displayed metric AND explicitly verified.
+ * Never pulls season-total ranks for per-game averages, and omits contradictory ranks.
+ */
+function resolveVerifiedRanks(
+  awayStat: NBACompetitorStat | null,
+  homeStat: NBACompetitorStat | null,
+  awayVal: number | null,
+  homeVal: number | null,
+  lowerIsBetter = false
+): { awayRank?: string; homeRank?: string } {
+  const rawAway =
+    awayStat?.verifiedRank === true && awayStat.rankDisplayValue ? awayStat.rankDisplayValue.trim() : undefined
+  const rawHome =
+    homeStat?.verifiedRank === true && homeStat.rankDisplayValue ? homeStat.rankDisplayValue.trim() : undefined
+
+  if (!rawAway && !rawHome) return {}
+
+  // Sanity guard: if both teams have ranks and values, verify ranks don't contradict value ordering
+  if (rawAway && rawHome && awayVal !== null && homeVal !== null && Math.abs(awayVal - homeVal) > 0.01) {
+    const aOrd = parseRankOrdinal(rawAway)
+    const hOrd = parseRankOrdinal(rawHome)
+    if (aOrd !== null && hOrd !== null) {
+      const awayBetter = lowerIsBetter ? awayVal < homeVal : awayVal > homeVal
+      if ((awayBetter && aOrd >= hOrd) || (!awayBetter && hOrd >= aOrd)) {
+        return {}
+      }
+    }
+  }
+
+  return { awayRank: rawAway, homeRank: rawHome }
+}
+
+function parseMadeAttempted(val?: string): { made: number; attempted: number } | null {
+  if (!val) return null
+  const m = val.trim().match(/^(\d+)\s*-\s*(\d+)$/)
+  if (!m) return null
+  const made = parseInt(m[1], 10)
+  const attempted = parseInt(m[2], 10)
+  if (!Number.isFinite(made) || !Number.isFinite(attempted) || made > attempted) return null
+  return { made, attempted }
+}
+
+/**
+ * Resolves a shooting line (made-attempted + percentage) without mixing inconsistent sources.
+ */
+function resolveShootingLine(
+  comp: NBACompetitor | undefined,
+  summary: NBATeamSummary | null,
+  summaryMadeAttKey: 'fgMadeAttempted' | 'threePtMadeAttempted' | 'ftMadeAttempted',
+  summaryPctKey: 'fieldGoalPct' | 'threePointPct' | 'freeThrowPct',
+  compMadeKeys: string[],
+  compAttKeys: string[],
+  compPctKeys: string[]
+): { display: string; pctValue: number | null } {
+  const sumMadeAtt = summary?.stats?.[summaryMadeAttKey]
+  const sumPctRaw = summary?.stats?.[summaryPctKey]
+  const compMade = findCompetitorStat(comp, compMadeKeys)?.displayValue
+  const compAtt = findCompetitorStat(comp, compAttKeys)?.displayValue
+  const compMadeAtt = compMade !== undefined && compAtt !== undefined ? `${compMade}-${compAtt}` : undefined
+  const compPctRaw = findCompetitorStat(comp, compPctKeys)?.displayValue
+
+  // Prefer matching pair from same source (summary first, then competitor scoreboard)
+  let chosenMadeAtt = sumMadeAtt || compMadeAtt
+  let chosenPctNum = sumMadeAtt
+    ? parseStatNumber(sumPctRaw) ?? parseStatNumber(compPctRaw)
+    : parseStatNumber(compPctRaw) ?? parseStatNumber(sumPctRaw)
+
+  if (chosenMadeAtt) {
+    const parsedMA = parseMadeAttempted(chosenMadeAtt)
+    if (parsedMA) {
+      if (parsedMA.attempted > 0) {
+        const expectedPct = (parsedMA.made / parsedMA.attempted) * 100
+        if (chosenPctNum === null || Math.abs(expectedPct - chosenPctNum) > 1.0) {
+          // Reconcile against arithmetic truth from made-attempted rather than mixing another source's %
+          chosenPctNum = Math.round(expectedPct * 10) / 10
+        }
+      } else {
+        chosenPctNum = null
+      }
+      return {
+        display: chosenPctNum !== null ? `${chosenMadeAtt} (${formatPctDisplay(chosenPctNum)})` : chosenMadeAtt,
+        pctValue: chosenPctNum,
+      }
+    }
+    chosenMadeAtt = undefined
+  }
+
+  return {
+    display: formatPctDisplay(chosenPctNum),
+    pctValue: chosenPctNum,
+  }
+}
+
 /**
  * Extracts overall record, Home/Road splits, streak, and Last 10 record.
+ * Preserves explicit '0-0' when provided by data, and returns null when absent.
  */
 export function extractRecordSummary(
   competitor?: NBACompetitor,
   teamSummary?: NBATeamSummary | null
 ): TeamRecordBreakdown {
+  const validSummary = getValidatedTeamSummary(teamSummary, competitor)
   const records = competitor?.records || []
-  const overall =
+  const rawOverall =
     records.find((r) => r.type === 'total' || r.name === 'overall')?.summary ||
-    records[0]?.summary ||
-    '0-0'
-  const home = records.find((r) => r.type === 'home' || r.name === 'Home')?.summary
-  const road = records.find((r) => r.type === 'road' || r.name === 'Road')?.summary
+    records[0]?.summary
+  const overall = typeof rawOverall === 'string' && rawOverall.trim() ? rawOverall.trim() : null
+  const home = records.find((r) => r.type === 'home' || r.name === 'Home')?.summary?.trim() || undefined
+  const road = records.find((r) => r.type === 'road' || r.name === 'Road')?.summary?.trim() || undefined
 
   return {
     overall,
     home,
     road,
-    streak: teamSummary?.stats?.streak,
-    lastTen: teamSummary?.stats?.lastTen,
+    streak: validSummary?.stats?.streak,
+    lastTen: validSummary?.stats?.lastTen,
   }
 }
 
-function findLeaderEntry(leaders: NBALeader[] | undefined, keys: string[]) {
+const SEASON_AVG_CATEGORY_PATTERN = /per\s*game|pergame|\b(ppg|rpg|apg)\b|\bavg\b|average/i
+
+function isSeasonAverageLeaderGroup(group: NBALeader): boolean {
+  const fields = [group.name, group.displayName, group.shortDisplayName, group.abbreviation]
+  return fields.some((f) => typeof f === 'string' && SEASON_AVG_CATEGORY_PATTERN.test(f))
+}
+
+function isNonIntegerGameTotalEntry(entry: NBALeader['leaders'][number]): boolean {
+  if (typeof entry.displayValue === 'string' && /\d+\.\d+/.test(entry.displayValue.trim())) {
+    return true
+  }
+  if (typeof entry.value === 'number' && Number.isFinite(entry.value) && !Number.isInteger(entry.value)) {
+    return true
+  }
+  return false
+}
+
+function findLeaderEntry(
+  leaders: NBALeader[] | undefined,
+  keys: string[],
+  mode: 'pre' | 'game' = 'pre'
+) {
   if (!Array.isArray(leaders)) return null
   for (const key of keys) {
-    const group = leaders.find((l) => l.name === key || l.shortDisplayName === key || l.abbreviation === key)
+    const group = leaders.find((l) => {
+      if (mode === 'game' && isSeasonAverageLeaderGroup(l)) return false
+      return l.name === key || l.shortDisplayName === key || l.abbreviation === key
+    })
     const entry = group?.leaders?.[0]
-    if (entry && entry.athlete) {
-      return { group, entry }
-    }
+    if (!entry || !entry.athlete) continue
+    if (mode === 'game' && isNonIntegerGameTotalEntry(entry)) continue
+    return { group, entry }
   }
   return null
 }
@@ -149,6 +333,7 @@ function normalizeName(name?: string): string {
 /**
  * Extracts top Scorer, Rebounder, and Assister for a team in pre, live, or post mode.
  * Enriches with player headshots, boxscore lines, season averages, and injury alerts.
+ * Strictly keeps season-average categories out of live/post game totals.
  */
 export function extractStatLeaders(
   competitor?: NBACompetitor,
@@ -156,30 +341,32 @@ export function extractStatLeaders(
   gameState: 'pre' | 'in' | 'post' | string = 'pre'
 ): NormalizedStatLeader[] {
   const isPre = gameState === 'pre'
+  const leaderMode: 'pre' | 'game' = isPre ? 'pre' : 'game'
+  const validSummary = getValidatedTeamSummary(teamSummary, competitor)
 
-  // Prefer scoreboard leaders immediately, merge summary leaders for extra summary line / headshots
-  const primaryLeaders = competitor?.leaders?.length ? competitor.leaders : teamSummary?.leaders || []
-  const secondaryLeaders = teamSummary?.leaders?.length ? teamSummary.leaders : competitor?.leaders || []
+  // Prefer scoreboard leaders immediately, merge validated summary leaders for extra summary line / headshots
+  const primaryLeaders = competitor?.leaders?.length ? competitor.leaders : validSummary?.leaders || []
+  const secondaryLeaders = validSummary?.leaders?.length ? validSummary.leaders : competitor?.leaders || []
 
   const injuryMap = new Map<string, { status: string; detail?: string }>()
-  if (isPre && teamSummary?.injuries) {
-    for (const inj of teamSummary.injuries) {
+  if (isPre && validSummary?.injuries) {
+    for (const inj of validSummary.injuries) {
       const key = normalizeName(inj.playerName)
       if (key) injuryMap.set(key, { status: inj.status, detail: inj.detail })
     }
   }
 
   const boxPlayerMap = new Map<string, NBAPlayerBoxLine>()
-  if (!isPre && teamSummary?.topPlayers) {
-    for (const p of teamSummary.topPlayers) {
+  if (!isPre && validSummary?.topPlayers) {
+    for (const p of validSummary.topPlayers) {
       if (p.id) boxPlayerMap.set(p.id, p)
       const nKey = normalizeName(p.name)
       if (nKey) boxPlayerMap.set(nKey, p)
     }
   }
 
-  // Extract overall rating line from scoreboard if present (e.g. "24.1 PPG, 4.9 RPG, 5.5 APG...")
-  const ratingMatch = findLeaderEntry(primaryLeaders, ['rating'])
+  // Extract overall rating line from scoreboard if present in pre-game mode
+  const ratingMatch = isPre ? findLeaderEntry(primaryLeaders, ['rating'], 'pre') : null
 
   const specs: Array<{
     category: 'PTS' | 'REB' | 'AST'
@@ -188,21 +375,21 @@ export function extractStatLeaders(
     keys: string[]
   }> = isPre
     ? [
-        { category: 'PTS', categoryLabel: 'Scoring Leader', unit: 'PPG', keys: ['pointsPerGame', 'points', 'PPG'] },
-        { category: 'REB', categoryLabel: 'Rebound Leader', unit: 'RPG', keys: ['reboundsPerGame', 'rebounds', 'RPG'] },
-        { category: 'AST', categoryLabel: 'Assist Leader', unit: 'APG', keys: ['assistsPerGame', 'assists', 'APG'] },
+        { category: 'PTS', categoryLabel: 'Scoring Leader', unit: 'PPG', keys: ['pointsPerGame', 'PPG', 'points'] },
+        { category: 'REB', categoryLabel: 'Rebound Leader', unit: 'RPG', keys: ['reboundsPerGame', 'RPG', 'rebounds'] },
+        { category: 'AST', categoryLabel: 'Assist Leader', unit: 'APG', keys: ['assistsPerGame', 'APG', 'assists'] },
       ]
     : [
-        { category: 'PTS', categoryLabel: 'Points Leader', unit: 'PTS', keys: ['points', 'Pts', 'pointsPerGame'] },
-        { category: 'REB', categoryLabel: 'Rebounds Leader', unit: 'REB', keys: ['rebounds', 'Reb', 'reboundsPerGame'] },
-        { category: 'AST', categoryLabel: 'Assists Leader', unit: 'AST', keys: ['assists', 'Ast', 'assistsPerGame'] },
+        { category: 'PTS', categoryLabel: 'Points Leader', unit: 'PTS', keys: ['points', 'Pts', 'PTS'] },
+        { category: 'REB', categoryLabel: 'Rebounds Leader', unit: 'REB', keys: ['rebounds', 'Reb', 'REB'] },
+        { category: 'AST', categoryLabel: 'Assists Leader', unit: 'AST', keys: ['assists', 'Ast', 'AST'] },
       ]
 
   const result: NormalizedStatLeader[] = []
 
   for (const spec of specs) {
-    const primaryMatch = findLeaderEntry(primaryLeaders, spec.keys)
-    const secondaryMatch = findLeaderEntry(secondaryLeaders, spec.keys)
+    const primaryMatch = findLeaderEntry(primaryLeaders, spec.keys, leaderMode)
+    const secondaryMatch = findLeaderEntry(secondaryLeaders, spec.keys, leaderMode)
     const match = primaryMatch || secondaryMatch
     if (!match) continue
 
@@ -233,24 +420,30 @@ export function extractStatLeaders(
       if (box) {
         const parts: string[] = []
         if (spec.category === 'PTS') {
-          if (box.fg && box.fg !== '0-0') parts.push(`${box.fg} FG`)
-          if (box.threePt && box.threePt !== '0-0') parts.push(`${box.threePt} 3PT`)
-          parts.push(`${box.reb} REB`, `${box.ast} AST`)
+          if (box.fg !== null && box.fg !== '0-0') parts.push(`${box.fg} FG`)
+          if (box.threePt !== null && box.threePt !== '0-0') parts.push(`${box.threePt} 3PT`)
+          if (box.reb !== null) parts.push(`${box.reb} REB`)
+          if (box.ast !== null) parts.push(`${box.ast} AST`)
         } else if (spec.category === 'REB') {
-          parts.push(`${box.pts} PTS`, `${box.ast} AST`)
-          if (box.fg && box.fg !== '0-0') parts.push(`${box.fg} FG`)
-          if (box.blk > 0) parts.push(`${box.blk} BLK`)
+          if (box.pts !== null) parts.push(`${box.pts} PTS`)
+          if (box.ast !== null) parts.push(`${box.ast} AST`)
+          if (box.fg !== null && box.fg !== '0-0') parts.push(`${box.fg} FG`)
+          if (box.blk !== null && box.blk > 0) parts.push(`${box.blk} BLK`)
         } else {
-          parts.push(`${box.pts} PTS`, `${box.reb} REB`)
-          if (box.fg && box.fg !== '0-0') parts.push(`${box.fg} FG`)
-          if (box.stl > 0) parts.push(`${box.stl} STL`)
+          if (box.pts !== null) parts.push(`${box.pts} PTS`)
+          if (box.reb !== null) parts.push(`${box.reb} REB`)
+          if (box.fg !== null && box.fg !== '0-0') parts.push(`${box.fg} FG`)
+          if (box.stl !== null && box.stl > 0) parts.push(`${box.stl} STL`)
         }
-        if (box.plusMinus && parts.length < 4) parts.push(`${box.plusMinus} +/-`)
+        if (box.plusMinus !== null && parts.length < 4) parts.push(`${box.plusMinus} +/-`)
         subline = parts.join(' • ')
-      } else if (secEntry?.summary) {
-        subline = secEntry.summary
-      } else if (position) {
-        subline = `Pos: ${position}`
+      }
+      if (!subline) {
+        if (secEntry?.summary) {
+          subline = secEntry.summary
+        } else if (position) {
+          subline = `Pos: ${position}`
+        }
       }
     }
 
@@ -265,7 +458,7 @@ export function extractStatLeaders(
       jersey,
       position,
       headshot,
-      primaryValue: entry.displayValue || String(entry.value ?? '0'),
+      primaryValue: entry.displayValue || (Number.isFinite(entry.value) ? String(entry.value) : '—'),
       primaryUnit: spec.unit,
       subline,
       injuryStatus: inj?.status,
@@ -281,23 +474,45 @@ function buildComparisonRow(
   label: string,
   awayDisplay: string,
   homeDisplay: string,
-  awayValue: number,
-  homeValue: number,
+  awayValue: number | null,
+  homeValue: number | null,
   options: { lowerIsBetter?: boolean; awayRank?: string; homeRank?: string } = {}
 ): TeamComparisonRow {
   const { lowerIsBetter = false, awayRank, homeRank } = options
-  const safeAway = Number.isFinite(awayValue) ? Math.max(0, awayValue) : 0
-  const safeHome = Number.isFinite(homeValue) ? Math.max(0, homeValue) : 0
+  const hasAway = awayValue !== null && Number.isFinite(awayValue)
+  const hasHome = homeValue !== null && Number.isFinite(homeValue)
+  const isPartial = !hasAway || !hasHome
+
+  if (isPartial) {
+    return {
+      key,
+      label,
+      awayDisplay: hasAway ? awayDisplay : '—',
+      homeDisplay: hasHome ? homeDisplay : '—',
+      awayValue: hasAway ? awayValue : null,
+      homeValue: hasHome ? homeValue : null,
+      awayRank: hasAway ? awayRank : undefined,
+      homeRank: hasHome ? homeRank : undefined,
+      lowerIsBetter,
+      awaySharePct: null,
+      homeSharePct: null,
+      leaderSide: 'none',
+      isPartial: true,
+    }
+  }
+
+  const safeAway = Math.max(0, awayValue)
+  const safeHome = Math.max(0, homeValue)
   const total = safeAway + safeHome
   const awaySharePct = total > 0 ? Math.round((safeAway / total) * 100) : 50
   const homeSharePct = 100 - awaySharePct
 
-  let leaderSide: 'away' | 'home' | 'tie' = 'tie'
-  if (Math.abs(safeAway - safeHome) > 0.01) {
+  let leaderSide: 'away' | 'home' | 'tie' | 'none' = 'tie'
+  if (Math.abs(awayValue - homeValue) > 0.01) {
     if (lowerIsBetter) {
-      leaderSide = safeAway < safeHome ? 'away' : 'home'
+      leaderSide = awayValue < homeValue ? 'away' : 'home'
     } else {
-      leaderSide = safeAway > safeHome ? 'away' : 'home'
+      leaderSide = awayValue > homeValue ? 'away' : 'home'
     }
   }
 
@@ -306,14 +521,15 @@ function buildComparisonRow(
     label,
     awayDisplay,
     homeDisplay,
-    awayValue: safeAway,
-    homeValue: safeHome,
+    awayValue,
+    homeValue,
     awayRank,
     homeRank,
     lowerIsBetter,
     awaySharePct,
     homeSharePct,
     leaderSide,
+    isPartial: false,
   }
 }
 
@@ -330,121 +546,145 @@ export function extractTeamComparisonRows(
   const rows: TeamComparisonRow[] = []
   const highlights: GameHighlightMetric[] = []
 
+  const validAwaySummary = getValidatedTeamSummary(awaySummary, awayComp)
+  const validHomeSummary = getValidatedTeamSummary(homeSummary, homeComp)
+
   if (gameState === 'pre') {
-    const awayPpg = awaySummary?.stats?.avgPoints || findCompetitorStat(awayComp, ['avgPoints'])?.displayValue
-    const homePpg = homeSummary?.stats?.avgPoints || findCompetitorStat(homeComp, ['avgPoints'])?.displayValue
-    const awayPpgRank = findCompetitorStat(awayComp, ['points', 'avgPoints'])?.rank
-    const homePpgRank = findCompetitorStat(homeComp, ['points', 'avgPoints'])?.rank
-    if (awayPpg || homePpg) {
+    const awayPpgStat = findCompetitorStat(awayComp, ['avgPoints'])
+    const homePpgStat = findCompetitorStat(homeComp, ['avgPoints'])
+    const awayPpgRaw = validAwaySummary?.stats?.avgPoints ?? awayPpgStat?.displayValue
+    const homePpgRaw = validHomeSummary?.stats?.avgPoints ?? homePpgStat?.displayValue
+    const awayPpgVal = parseStatNumber(awayPpgRaw)
+    const homePpgVal = parseStatNumber(homePpgRaw)
+    if (awayPpgVal !== null || homePpgVal !== null) {
+      const ranks = resolveVerifiedRanks(awayPpgStat, homePpgStat, awayPpgVal, homePpgVal)
       rows.push(
         buildComparisonRow(
           'ppg',
           'Points / Game',
-          awayPpg || '-',
-          homePpg || '-',
-          parseStatNumber(awayPpg),
-          parseStatNumber(homePpg),
-          { awayRank: awayPpgRank, homeRank: homePpgRank }
+          formatNumericDisplay(awayPpgRaw, awayPpgVal),
+          formatNumericDisplay(homePpgRaw, homePpgVal),
+          awayPpgVal,
+          homePpgVal,
+          ranks
         )
       )
     }
 
-    const awayOppPpg = awaySummary?.stats?.avgPointsAgainst
-    const homeOppPpg = homeSummary?.stats?.avgPointsAgainst
-    if (awayOppPpg || homeOppPpg) {
+    const awayOppPpgRaw = validAwaySummary?.stats?.avgPointsAgainst
+    const homeOppPpgRaw = validHomeSummary?.stats?.avgPointsAgainst
+    const awayOppPpgVal = parseStatNumber(awayOppPpgRaw)
+    const homeOppPpgVal = parseStatNumber(homeOppPpgRaw)
+    if (awayOppPpgVal !== null || homeOppPpgVal !== null) {
       rows.push(
         buildComparisonRow(
           'oppPpg',
           'Opp PPG Allowed',
-          awayOppPpg || '-',
-          homeOppPpg || '-',
-          parseStatNumber(awayOppPpg),
-          parseStatNumber(homeOppPpg),
+          formatNumericDisplay(awayOppPpgRaw, awayOppPpgVal),
+          formatNumericDisplay(homeOppPpgRaw, homeOppPpgVal),
+          awayOppPpgVal,
+          homeOppPpgVal,
           { lowerIsBetter: true }
         )
       )
     }
 
-    const awayFg = findCompetitorStat(awayComp, ['fieldGoalPct'])?.displayValue || awaySummary?.stats?.fieldGoalPct
-    const homeFg = findCompetitorStat(homeComp, ['fieldGoalPct'])?.displayValue || homeSummary?.stats?.fieldGoalPct
-    const awayFgRank = findCompetitorStat(awayComp, ['fieldGoalPct'])?.rank
-    const homeFgRank = findCompetitorStat(homeComp, ['fieldGoalPct'])?.rank
-    if (awayFg || homeFg) {
+    const awayFgStat = findCompetitorStat(awayComp, ['fieldGoalPct'])
+    const homeFgStat = findCompetitorStat(homeComp, ['fieldGoalPct'])
+    const awayFgRaw = awayFgStat?.displayValue ?? validAwaySummary?.stats?.fieldGoalPct
+    const homeFgRaw = homeFgStat?.displayValue ?? validHomeSummary?.stats?.fieldGoalPct
+    const awayFgVal = parseStatNumber(awayFgRaw)
+    const homeFgVal = parseStatNumber(homeFgRaw)
+    if (awayFgVal !== null || homeFgVal !== null) {
+      const ranks = resolveVerifiedRanks(awayFgStat, homeFgStat, awayFgVal, homeFgVal)
       rows.push(
         buildComparisonRow(
           'fgPct',
           'Field Goal %',
-          formatPctDisplay(awayFg),
-          formatPctDisplay(homeFg),
-          parseStatNumber(awayFg),
-          parseStatNumber(homeFg),
-          { awayRank: awayFgRank, homeRank: homeFgRank }
+          formatPctDisplay(awayFgVal),
+          formatPctDisplay(homeFgVal),
+          awayFgVal,
+          homeFgVal,
+          ranks
         )
       )
     }
 
-    const away3p = findCompetitorStat(awayComp, ['threePointFieldGoalPct', 'threePointPct'])?.displayValue || awaySummary?.stats?.threePointPct
-    const home3p = findCompetitorStat(homeComp, ['threePointFieldGoalPct', 'threePointPct'])?.displayValue || homeSummary?.stats?.threePointPct
-    const away3pRank = findCompetitorStat(awayComp, ['threePointPct', 'threePointFieldGoalPct'])?.rank
-    const home3pRank = findCompetitorStat(homeComp, ['threePointPct', 'threePointFieldGoalPct'])?.rank
-    if (away3p || home3p) {
+    const away3pStat = findCompetitorStat(awayComp, ['threePointFieldGoalPct', 'threePointPct'])
+    const home3pStat = findCompetitorStat(homeComp, ['threePointFieldGoalPct', 'threePointPct'])
+    const away3pRaw = away3pStat?.displayValue ?? validAwaySummary?.stats?.threePointPct
+    const home3pRaw = home3pStat?.displayValue ?? validHomeSummary?.stats?.threePointPct
+    const away3pVal = parseStatNumber(away3pRaw)
+    const home3pVal = parseStatNumber(home3pRaw)
+    if (away3pVal !== null || home3pVal !== null) {
+      const ranks = resolveVerifiedRanks(away3pStat, home3pStat, away3pVal, home3pVal)
       rows.push(
         buildComparisonRow(
           'threePct',
           '3-Point %',
-          formatPctDisplay(away3p),
-          formatPctDisplay(home3p),
-          parseStatNumber(away3p),
-          parseStatNumber(home3p),
-          { awayRank: away3pRank, homeRank: home3pRank }
+          formatPctDisplay(away3pVal),
+          formatPctDisplay(home3pVal),
+          away3pVal,
+          home3pVal,
+          ranks
         )
       )
     }
 
-    const awayReb = awaySummary?.stats?.avgRebounds || findCompetitorStat(awayComp, ['avgRebounds'])?.displayValue
-    const homeReb = homeSummary?.stats?.avgRebounds || findCompetitorStat(homeComp, ['avgRebounds'])?.displayValue
-    if (awayReb || homeReb) {
+    const awayRebStat = findCompetitorStat(awayComp, ['avgRebounds'])
+    const homeRebStat = findCompetitorStat(homeComp, ['avgRebounds'])
+    const awayRebRaw = validAwaySummary?.stats?.avgRebounds ?? awayRebStat?.displayValue
+    const homeRebRaw = validHomeSummary?.stats?.avgRebounds ?? homeRebStat?.displayValue
+    const awayRebVal = parseStatNumber(awayRebRaw)
+    const homeRebVal = parseStatNumber(homeRebRaw)
+    if (awayRebVal !== null || homeRebVal !== null) {
       rows.push(
         buildComparisonRow(
           'rpg',
           'Rebounds / Game',
-          awayReb || '-',
-          homeReb || '-',
-          parseStatNumber(awayReb),
-          parseStatNumber(homeReb)
+          formatNumericDisplay(awayRebRaw, awayRebVal),
+          formatNumericDisplay(homeRebRaw, homeRebVal),
+          awayRebVal,
+          homeRebVal
         )
       )
     }
 
-    const awayAst = awaySummary?.stats?.avgAssists || findCompetitorStat(awayComp, ['avgAssists'])?.displayValue
-    const homeAst = homeSummary?.stats?.avgAssists || findCompetitorStat(homeComp, ['avgAssists'])?.displayValue
-    const awayAstRank = findCompetitorStat(awayComp, ['assists', 'avgAssists'])?.rank
-    const homeAstRank = findCompetitorStat(homeComp, ['assists', 'avgAssists'])?.rank
-    if (awayAst || homeAst) {
+    const awayAstStat = findCompetitorStat(awayComp, ['avgAssists'])
+    const homeAstStat = findCompetitorStat(homeComp, ['avgAssists'])
+    const awayAstRaw = validAwaySummary?.stats?.avgAssists ?? awayAstStat?.displayValue
+    const homeAstRaw = validHomeSummary?.stats?.avgAssists ?? homeAstStat?.displayValue
+    const awayAstVal = parseStatNumber(awayAstRaw)
+    const homeAstVal = parseStatNumber(homeAstRaw)
+    if (awayAstVal !== null || homeAstVal !== null) {
+      const ranks = resolveVerifiedRanks(awayAstStat, homeAstStat, awayAstVal, homeAstVal)
       rows.push(
         buildComparisonRow(
           'apg',
           'Assists / Game',
-          awayAst || '-',
-          homeAst || '-',
-          parseStatNumber(awayAst),
-          parseStatNumber(homeAst),
-          { awayRank: awayAstRank, homeRank: homeAstRank }
+          formatNumericDisplay(awayAstRaw, awayAstVal),
+          formatNumericDisplay(homeAstRaw, homeAstVal),
+          awayAstVal,
+          homeAstVal,
+          ranks
         )
       )
     }
 
-    const awayTov = awaySummary?.stats?.avgTurnovers
-    const homeTov = homeSummary?.stats?.avgTurnovers
-    if (awayTov || homeTov) {
+    const awayTovRaw = validAwaySummary?.stats?.avgTotalTurnovers ?? validAwaySummary?.stats?.avgTurnovers
+    const homeTovRaw = validHomeSummary?.stats?.avgTotalTurnovers ?? validHomeSummary?.stats?.avgTurnovers
+    const awayTovVal = parseStatNumber(awayTovRaw)
+    const homeTovVal = parseStatNumber(homeTovRaw)
+    if (awayTovVal !== null || homeTovVal !== null) {
+      const isTotal = Boolean(validAwaySummary?.stats?.avgTotalTurnovers || validHomeSummary?.stats?.avgTotalTurnovers)
       rows.push(
         buildComparisonRow(
           'tov',
-          'Turnovers / Game',
-          awayTov || '-',
-          homeTov || '-',
-          parseStatNumber(awayTov),
-          parseStatNumber(homeTov),
+          isTotal ? 'Total Turnovers / G' : 'Turnovers / Game',
+          formatNumericDisplay(awayTovRaw, awayTovVal),
+          formatNumericDisplay(homeTovRaw, homeTovVal),
+          awayTovVal,
+          homeTovVal,
           { lowerIsBetter: true }
         )
       )
@@ -453,150 +693,222 @@ export function extractTeamComparisonRows(
     return { rows, highlights }
   }
 
-  // Post-game & Live Box Score Comparison
-  const awayFgPct = awaySummary?.stats?.fieldGoalPct || findCompetitorStat(awayComp, ['fieldGoalPct'])?.displayValue
-  const homeFgPct = homeSummary?.stats?.fieldGoalPct || findCompetitorStat(homeComp, ['fieldGoalPct'])?.displayValue
-  const awayFgMadeAtt =
-    awaySummary?.stats?.fgMadeAttempted ||
-    (findCompetitorStat(awayComp, ['fieldGoalsMade']) && findCompetitorStat(awayComp, ['fieldGoalsAttempted'])
-      ? `${findCompetitorStat(awayComp, ['fieldGoalsMade'])!.displayValue}-${findCompetitorStat(awayComp, ['fieldGoalsAttempted'])!.displayValue}`
-      : '')
-  const homeFgMadeAtt =
-    homeSummary?.stats?.fgMadeAttempted ||
-    (findCompetitorStat(homeComp, ['fieldGoalsMade']) && findCompetitorStat(homeComp, ['fieldGoalsAttempted'])
-      ? `${findCompetitorStat(homeComp, ['fieldGoalsMade'])!.displayValue}-${findCompetitorStat(homeComp, ['fieldGoalsAttempted'])!.displayValue}`
-      : '')
-  if (awayFgPct || homeFgPct) {
+  // Post-game & Live Box Score Comparison (preventing mixed-source shooting percentages)
+  const awayFgLine = resolveShootingLine(
+    awayComp,
+    validAwaySummary,
+    'fgMadeAttempted',
+    'fieldGoalPct',
+    ['fieldGoalsMade'],
+    ['fieldGoalsAttempted'],
+    ['fieldGoalPct']
+  )
+  const homeFgLine = resolveShootingLine(
+    homeComp,
+    validHomeSummary,
+    'fgMadeAttempted',
+    'fieldGoalPct',
+    ['fieldGoalsMade'],
+    ['fieldGoalsAttempted'],
+    ['fieldGoalPct']
+  )
+  if (awayFgLine.pctValue !== null || homeFgLine.pctValue !== null) {
     rows.push(
       buildComparisonRow(
         'fg',
         'Field Goals',
-        awayFgMadeAtt ? `${awayFgMadeAtt} (${formatPctDisplay(awayFgPct)})` : formatPctDisplay(awayFgPct),
-        homeFgMadeAtt ? `${homeFgMadeAtt} (${formatPctDisplay(homeFgPct)})` : formatPctDisplay(homeFgPct),
-        parseStatNumber(awayFgPct),
-        parseStatNumber(homeFgPct)
+        awayFgLine.display,
+        homeFgLine.display,
+        awayFgLine.pctValue,
+        homeFgLine.pctValue
       )
     )
   }
 
-  const away3pPct = awaySummary?.stats?.threePointPct || findCompetitorStat(awayComp, ['threePointFieldGoalPct', 'threePointPct'])?.displayValue
-  const home3pPct = homeSummary?.stats?.threePointPct || findCompetitorStat(homeComp, ['threePointFieldGoalPct', 'threePointPct'])?.displayValue
-  const away3pMadeAtt =
-    awaySummary?.stats?.threePtMadeAttempted ||
-    (findCompetitorStat(awayComp, ['threePointFieldGoalsMade']) && findCompetitorStat(awayComp, ['threePointFieldGoalsAttempted'])
-      ? `${findCompetitorStat(awayComp, ['threePointFieldGoalsMade'])!.displayValue}-${findCompetitorStat(awayComp, ['threePointFieldGoalsAttempted'])!.displayValue}`
-      : '')
-  const home3pMadeAtt =
-    homeSummary?.stats?.threePtMadeAttempted ||
-    (findCompetitorStat(homeComp, ['threePointFieldGoalsMade']) && findCompetitorStat(homeComp, ['threePointFieldGoalsAttempted'])
-      ? `${findCompetitorStat(homeComp, ['threePointFieldGoalsMade'])!.displayValue}-${findCompetitorStat(homeComp, ['threePointFieldGoalsAttempted'])!.displayValue}`
-      : '')
-  if (away3pPct || home3pPct) {
+  const away3pLine = resolveShootingLine(
+    awayComp,
+    validAwaySummary,
+    'threePtMadeAttempted',
+    'threePointPct',
+    ['threePointFieldGoalsMade'],
+    ['threePointFieldGoalsAttempted'],
+    ['threePointFieldGoalPct', 'threePointPct']
+  )
+  const home3pLine = resolveShootingLine(
+    homeComp,
+    validHomeSummary,
+    'threePtMadeAttempted',
+    'threePointPct',
+    ['threePointFieldGoalsMade'],
+    ['threePointFieldGoalsAttempted'],
+    ['threePointFieldGoalPct', 'threePointPct']
+  )
+  if (away3pLine.pctValue !== null || home3pLine.pctValue !== null) {
     rows.push(
       buildComparisonRow(
         'threePt',
         '3-Pointers',
-        away3pMadeAtt ? `${away3pMadeAtt} (${formatPctDisplay(away3pPct)})` : formatPctDisplay(away3pPct),
-        home3pMadeAtt ? `${home3pMadeAtt} (${formatPctDisplay(home3pPct)})` : formatPctDisplay(home3pPct),
-        parseStatNumber(away3pPct),
-        parseStatNumber(home3pPct)
+        away3pLine.display,
+        home3pLine.display,
+        away3pLine.pctValue,
+        home3pLine.pctValue
       )
     )
   }
 
-  const awayFtPct = awaySummary?.stats?.freeThrowPct || findCompetitorStat(awayComp, ['freeThrowPct'])?.displayValue
-  const homeFtPct = homeSummary?.stats?.freeThrowPct || findCompetitorStat(homeComp, ['freeThrowPct'])?.displayValue
-  const awayFtMadeAtt =
-    awaySummary?.stats?.ftMadeAttempted ||
-    (findCompetitorStat(awayComp, ['freeThrowsMade']) && findCompetitorStat(awayComp, ['freeThrowsAttempted'])
-      ? `${findCompetitorStat(awayComp, ['freeThrowsMade'])!.displayValue}-${findCompetitorStat(awayComp, ['freeThrowsAttempted'])!.displayValue}`
-      : '')
-  const homeFtMadeAtt =
-    homeSummary?.stats?.ftMadeAttempted ||
-    (findCompetitorStat(homeComp, ['freeThrowsMade']) && findCompetitorStat(homeComp, ['freeThrowsAttempted'])
-      ? `${findCompetitorStat(homeComp, ['freeThrowsMade'])!.displayValue}-${findCompetitorStat(homeComp, ['freeThrowsAttempted'])!.displayValue}`
-      : '')
-  if (awayFtPct || homeFtPct) {
+  const awayFtLine = resolveShootingLine(
+    awayComp,
+    validAwaySummary,
+    'ftMadeAttempted',
+    'freeThrowPct',
+    ['freeThrowsMade'],
+    ['freeThrowsAttempted'],
+    ['freeThrowPct']
+  )
+  const homeFtLine = resolveShootingLine(
+    homeComp,
+    validHomeSummary,
+    'ftMadeAttempted',
+    'freeThrowPct',
+    ['freeThrowsMade'],
+    ['freeThrowsAttempted'],
+    ['freeThrowPct']
+  )
+  if (awayFtLine.pctValue !== null || homeFtLine.pctValue !== null) {
     rows.push(
       buildComparisonRow(
         'ft',
         'Free Throws',
-        awayFtMadeAtt ? `${awayFtMadeAtt} (${formatPctDisplay(awayFtPct)})` : formatPctDisplay(awayFtPct),
-        homeFtMadeAtt ? `${homeFtMadeAtt} (${formatPctDisplay(homeFtPct)})` : formatPctDisplay(homeFtPct),
-        parseStatNumber(awayFtPct),
-        parseStatNumber(homeFtPct)
+        awayFtLine.display,
+        homeFtLine.display,
+        awayFtLine.pctValue,
+        homeFtLine.pctValue
       )
     )
   }
 
-  const awayReb = awaySummary?.stats?.totalRebounds || findCompetitorStat(awayComp, ['rebounds'])?.displayValue
-  const homeReb = homeSummary?.stats?.totalRebounds || findCompetitorStat(homeComp, ['rebounds'])?.displayValue
-  const awayOreb = awaySummary?.stats?.offensiveRebounds
-  const homeOreb = homeSummary?.stats?.offensiveRebounds
-  if (awayReb || homeReb) {
+  const awayRebRaw = validAwaySummary?.stats?.totalRebounds ?? findCompetitorStat(awayComp, ['rebounds'])?.displayValue
+  const homeRebRaw = validHomeSummary?.stats?.totalRebounds ?? findCompetitorStat(homeComp, ['rebounds'])?.displayValue
+  const awayRebVal = parseStatNumber(awayRebRaw)
+  const homeRebVal = parseStatNumber(homeRebRaw)
+  const awayOreb = parseStatNumber(validAwaySummary?.stats?.offensiveRebounds) !== null ? validAwaySummary?.stats?.offensiveRebounds : undefined
+  const homeOreb = parseStatNumber(validHomeSummary?.stats?.offensiveRebounds) !== null ? validHomeSummary?.stats?.offensiveRebounds : undefined
+  if (awayRebVal !== null || homeRebVal !== null) {
     rows.push(
       buildComparisonRow(
         'reb',
-        'Rebounds (OREB)',
-        awayOreb ? `${awayReb || '-'} (${awayOreb})` : awayReb || '-',
-        homeOreb ? `${homeReb || '-'} (${homeOreb})` : homeReb || '-',
-        parseStatNumber(awayReb),
-        parseStatNumber(homeReb)
+        awayOreb || homeOreb ? 'Rebounds (OREB)' : 'Rebounds',
+        awayRebVal !== null ? (awayOreb ? `${awayRebRaw} (${awayOreb})` : formatNumericDisplay(awayRebRaw, awayRebVal)) : '—',
+        homeRebVal !== null ? (homeOreb ? `${homeRebRaw} (${homeOreb})` : formatNumericDisplay(homeRebRaw, homeRebVal)) : '—',
+        awayRebVal,
+        homeRebVal
       )
     )
   }
 
-  const awayAst = awaySummary?.stats?.assists || findCompetitorStat(awayComp, ['assists'])?.displayValue
-  const homeAst = homeSummary?.stats?.assists || findCompetitorStat(homeComp, ['assists'])?.displayValue
-  if (awayAst || homeAst) {
+  const awayAstRaw = validAwaySummary?.stats?.assists ?? findCompetitorStat(awayComp, ['assists'])?.displayValue
+  const homeAstRaw = validHomeSummary?.stats?.assists ?? findCompetitorStat(homeComp, ['assists'])?.displayValue
+  const awayAstVal = parseStatNumber(awayAstRaw)
+  const homeAstVal = parseStatNumber(homeAstRaw)
+  if (awayAstVal !== null || homeAstVal !== null) {
     rows.push(
       buildComparisonRow(
         'ast',
         'Assists',
-        awayAst || '-',
-        homeAst || '-',
-        parseStatNumber(awayAst),
-        parseStatNumber(homeAst)
+        formatNumericDisplay(awayAstRaw, awayAstVal),
+        formatNumericDisplay(homeAstRaw, homeAstVal),
+        awayAstVal,
+        homeAstVal
       )
     )
   }
 
-  const awayTov = awaySummary?.stats?.turnovers
-  const homeTov = homeSummary?.stats?.turnovers
-  if (awayTov || homeTov) {
+  // Distinguish Total Turnovers (player + team) from Player Turnovers consistently with label
+  const hasTotalTov = Boolean(validAwaySummary?.stats?.totalTurnovers || validHomeSummary?.stats?.totalTurnovers)
+  const hasPlayerTov = Boolean(validAwaySummary?.stats?.playerTurnovers || validHomeSummary?.stats?.playerTurnovers)
+  const awayTovRaw = hasTotalTov
+    ? validAwaySummary?.stats?.totalTurnovers
+    : hasPlayerTov
+      ? validAwaySummary?.stats?.playerTurnovers
+      : validAwaySummary?.stats?.turnovers
+  const homeTovRaw = hasTotalTov
+    ? validHomeSummary?.stats?.totalTurnovers
+    : hasPlayerTov
+      ? validHomeSummary?.stats?.playerTurnovers
+      : validHomeSummary?.stats?.turnovers
+  const awayTovVal = parseStatNumber(awayTovRaw)
+  const homeTovVal = parseStatNumber(homeTovRaw)
+  if (awayTovVal !== null || homeTovVal !== null) {
+    const tovLabel = hasTotalTov ? 'Total Turnovers' : hasPlayerTov ? 'Player Turnovers' : 'Turnovers'
     rows.push(
       buildComparisonRow(
         'tov',
-        'Turnovers',
-        awayTov || '-',
-        homeTov || '-',
-        parseStatNumber(awayTov),
-        parseStatNumber(homeTov),
+        tovLabel,
+        formatNumericDisplay(awayTovRaw, awayTovVal),
+        formatNumericDisplay(homeTovRaw, homeTovVal),
+        awayTovVal,
+        homeTovVal,
         { lowerIsBetter: true }
       )
     )
   }
 
-  // Cool Hustle & Flow Game Highlights (from summary boxscore)
-  const addHighlight = (key: string, label: string, aVal?: string, hVal?: string) => {
-    if (!aVal && !hVal) return
+  // Cool Hustle & Flow Game Highlights (from validated summary boxscore)
+  const addHighlight = (
+    key: string,
+    label: string,
+    aVal?: string,
+    hVal?: string,
+    lowerIsBetter = false
+  ) => {
     const av = parseStatNumber(aVal)
     const hv = parseStatNumber(hVal)
+    if (av === null && hv === null) return
+
+    const isPartial = av === null || hv === null
+    let leaderSide: 'away' | 'home' | 'tie' | 'none' = 'none'
+    if (!isPartial) {
+      if (av === hv) {
+        leaderSide = 'tie'
+      } else if (lowerIsBetter) {
+        leaderSide = av < hv ? 'away' : 'home'
+      } else {
+        leaderSide = av > hv ? 'away' : 'home'
+      }
+    }
+
     highlights.push({
       key,
       label,
-      awayDisplay: aVal || '0',
-      homeDisplay: hVal || '0',
+      awayDisplay: formatNumericDisplay(aVal, av),
+      homeDisplay: formatNumericDisplay(hVal, hv),
       awayValue: av,
       homeValue: hv,
-      leaderSide: av === hv ? 'tie' : av > hv ? 'away' : 'home',
+      lowerIsBetter,
+      leaderSide,
+      isPartial,
     })
   }
 
-  addHighlight('paint', 'Points in Paint', awaySummary?.stats?.pointsInPaint, homeSummary?.stats?.pointsInPaint)
-  addHighlight('fastBreak', 'Fast Break Pts', awaySummary?.stats?.fastBreakPoints, homeSummary?.stats?.fastBreakPoints)
-  addHighlight('tovPts', 'Pts Off Turnovers', awaySummary?.stats?.turnoverPoints, homeSummary?.stats?.turnoverPoints)
-  addHighlight('largestLead', 'Largest Lead', awaySummary?.stats?.largestLead, homeSummary?.stats?.largestLead)
+  addHighlight('paint', 'Points in Paint', validAwaySummary?.stats?.pointsInPaint, validHomeSummary?.stats?.pointsInPaint)
+  addHighlight('fastBreak', 'Fast Break Pts', validAwaySummary?.stats?.fastBreakPoints, validHomeSummary?.stats?.fastBreakPoints)
+
+  // ESPN's turnoverPoints represents Points Conceded Off Turnovers (lower is better!).
+  const awayConceded = validAwaySummary?.stats?.pointsConcededOffTurnovers ?? validAwaySummary?.stats?.turnoverPoints
+  const homeConceded = validHomeSummary?.stats?.pointsConcededOffTurnovers ?? validHomeSummary?.stats?.turnoverPoints
+  if (awayConceded || homeConceded) {
+    addHighlight('ptsConcededOffTov', 'Pts Conceded Off TOV', awayConceded, homeConceded, true)
+  } else {
+    addHighlight(
+      'ptsScoredOffTov',
+      'Pts Scored Off TOV',
+      validAwaySummary?.stats?.pointsScoredOffTurnovers,
+      validHomeSummary?.stats?.pointsScoredOffTurnovers,
+      false
+    )
+  }
+
+  addHighlight('largestLead', 'Largest Lead', validAwaySummary?.stats?.largestLead, validHomeSummary?.stats?.largestLead)
 
   return { rows, highlights }
 }

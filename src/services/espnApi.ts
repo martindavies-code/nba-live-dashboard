@@ -11,7 +11,7 @@ import type {
   NBAInjuryItem,
   NBALastGameItem,
 } from '../types/nba'
-import { resolveAnnouncingCrew } from '../utils/announcers.ts'
+import { resolveAnnouncingCrew, normalizeTeamAbbr } from '../utils/announcers.ts'
 import { sanitizeImageUrl } from '../utils/nbaHelpers.ts'
 import { DashboardDomainError, TransientNetworkError, isAbortError } from '../utils/errors.ts'
 import { withExponentialBackoff } from '../utils/retry.ts'
@@ -29,6 +29,43 @@ export interface FetchNBAScoreboardResult {
   cachedTimestamp?: string
 }
 
+export interface SummaryRequestContext {
+  homeTeamId?: string
+  awayTeamId?: string
+  homeAbbr?: string
+  awayAbbr?: string
+  forceRefresh?: boolean
+}
+
+export function normalizeGameState(gameState?: string): 'pre' | 'in' | 'post' {
+  return gameState === 'in' || gameState === 'post' ? gameState : 'pre'
+}
+
+export function getSummaryCacheTtlMs(gameState?: string): number {
+  const normState = normalizeGameState(gameState)
+  return normState === 'in' ? 15_000 : normState === 'post' ? 1_800_000 : 300_000
+}
+
+export function buildSummaryIdentityKey(
+  eventId: string,
+  gameState: string = 'pre',
+  context: SummaryRequestContext = {}
+): string {
+  const cleanId = typeof eventId === 'string' ? eventId.replace(/[^A-Za-z0-9_-]/g, '') : ''
+  const normState = normalizeGameState(gameState)
+  const awayKey = context.awayTeamId
+    ? `id:${context.awayTeamId}`
+    : context.awayAbbr
+      ? `abbr:${normalizeTeamAbbr(context.awayAbbr)}`
+      : '*'
+  const homeKey = context.homeTeamId
+    ? `id:${context.homeTeamId}`
+    : context.homeAbbr
+      ? `abbr:${normalizeTeamAbbr(context.homeAbbr)}`
+      : '*'
+  return `${cleanId}::${normState}::${awayKey}@${homeKey}`
+}
+
 interface CacheEntry {
   data: NBAScoreboardData
   timestamp: string
@@ -42,13 +79,23 @@ const IN_FLIGHT_REQUESTS = new Map<string, Promise<FetchNBAScoreboardResult>>()
 
 interface SummaryCacheEntry {
   data: NBAGameSummary
-  gameState: string
+  gameState: 'pre' | 'in' | 'post'
   expiresAt: number
+}
+
+interface InFlightSummaryEntry {
+  promise: Promise<NBAGameSummary | null>
+  controller: AbortController
+  subscribers: Set<symbol>
+  generation: number
 }
 
 const SUMMARY_CACHE = new Map<string, SummaryCacheEntry>()
 const MAX_SUMMARY_CACHE_ENTRIES = 20
-const IN_FLIGHT_SUMMARY_REQUESTS = new Map<string, Promise<NBAGameSummary | null>>()
+const IN_FLIGHT_SUMMARY_REQUESTS = new Map<string, InFlightSummaryEntry>()
+const SUMMARY_LATEST_KEY_GEN = new Map<string, number>()
+let summaryCacheEpoch = 0
+let summaryRequestSeq = 0
 
 /**
  * Validates and sanitizes date parameter into strictly valid YYYYMMDD format.
@@ -102,11 +149,13 @@ export function clearScoreboardCache(): void {
 }
 
 /**
- * Clears the game summary cache (used for cache invalidation & tests).
+ * Clears the game summary cache and invalidates in-flight cache epochs and per-key ownership.
  */
 export function clearSummaryCache(): void {
+  summaryCacheEpoch++
   SUMMARY_CACHE.clear()
   IN_FLIGHT_SUMMARY_REQUESTS.clear()
+  SUMMARY_LATEST_KEY_GEN.clear()
 }
 
 const MISSING_HEADSHOT_SENTINEL = 'https://invalid.local/__missing__'
@@ -502,16 +551,21 @@ function parseTeamSummaryStats(rawStats: unknown[]): NBATeamSummaryStats {
   const stats: NBATeamSummaryStats = {}
   if (!Array.isArray(rawStats)) return stats
 
-  const getVal = (names: string[]): string | undefined => {
+  const getItem = (names: string[]) => {
     for (const n of names) {
       const found = rawStats.find(
         (item) => item && typeof item === 'object' && (item as { name?: string }).name === n
-      ) as { displayValue?: unknown } | undefined
+      ) as { displayValue?: unknown; label?: unknown; abbreviation?: unknown } | undefined
       if (found && typeof found.displayValue === 'string' && found.displayValue.trim()) {
-        return found.displayValue.trim()
+        return found
       }
     }
     return undefined
+  }
+
+  const getVal = (names: string[]): string | undefined => {
+    const found = getItem(names)
+    return found && typeof found.displayValue === 'string' ? found.displayValue.trim() : undefined
   }
 
   stats.streak = getVal(['streak'])
@@ -525,6 +579,8 @@ function parseTeamSummaryStats(rawStats: unknown[]): NBATeamSummaryStats {
   stats.avgAssists = getVal(['avgAssists'])
   stats.avgSteals = getVal(['avgSteals'])
   stats.avgBlocks = getVal(['avgBlocks'])
+  stats.avgTotalTurnovers = getVal(['avgTotalTurnovers'])
+  stats.avgTeamTurnovers = getVal(['avgTeamTurnovers'])
   stats.avgTurnovers = getVal(['avgTotalTurnovers', 'avgTurnovers'])
   stats.fgMadeAttempted = getVal(['fieldGoalsMade-fieldGoalsAttempted'])
   stats.threePtMadeAttempted = getVal(['threePointFieldGoalsMade-threePointFieldGoalsAttempted'])
@@ -535,10 +591,42 @@ function parseTeamSummaryStats(rawStats: unknown[]): NBATeamSummaryStats {
   stats.assists = getVal(['assists'])
   stats.steals = getVal(['steals'])
   stats.blocks = getVal(['blocks'])
-  stats.turnovers = getVal(['turnovers', 'totalTurnovers'])
+
+  // Separate player turnovers ("turnovers"), team turnovers ("teamTurnovers"), and total turnovers ("totalTurnovers")
+  stats.totalTurnovers = getVal(['totalTurnovers'])
+  stats.playerTurnovers = getVal(['turnovers'])
+  stats.teamTurnovers = getVal(['teamTurnovers'])
+  stats.turnovers = stats.totalTurnovers ?? stats.playerTurnovers
+
   stats.pointsInPaint = getVal(['pointsInPaint'])
   stats.fastBreakPoints = getVal(['fastBreakPoints'])
-  stats.turnoverPoints = getVal(['turnoverPoints'])
+
+  // ESPN boxscore "turnoverPoints" is labeled "Points Conceded Off Turnovers".
+  // Preserve semantic distinction between conceded and scored points off turnovers.
+  const explicitConceded = getVal(['pointsConcededOffTurnovers'])
+  const explicitScored = getVal(['pointsScoredOffTurnovers', 'pointsOffTurnovers'])
+  const tovPtsItem = getItem(['turnoverPoints'])
+  const tovPtsVal = tovPtsItem && typeof tovPtsItem.displayValue === 'string' ? tovPtsItem.displayValue.trim() : undefined
+  const tovPtsLabel = `${typeof tovPtsItem?.label === 'string' ? tovPtsItem.label : ''} ${
+    typeof tovPtsItem?.abbreviation === 'string' ? tovPtsItem.abbreviation : ''
+  }`.trim()
+
+  if (explicitConceded) {
+    stats.pointsConcededOffTurnovers = explicitConceded
+  }
+  if (explicitScored) {
+    stats.pointsScoredOffTurnovers = explicitScored
+  }
+  if (tovPtsVal) {
+    stats.turnoverPoints = tovPtsVal
+    if (/scored/i.test(tovPtsLabel) && !/conceded/i.test(tovPtsLabel)) {
+      stats.pointsScoredOffTurnovers = stats.pointsScoredOffTurnovers ?? tovPtsVal
+    } else {
+      // ESPN summary API turnoverPoints represents Points Conceded Off Turnovers
+      stats.pointsConcededOffTurnovers = stats.pointsConcededOffTurnovers ?? tovPtsVal
+    }
+  }
+
   stats.largestLead = getVal(['largestLead'])
   stats.leadChanges = getVal(['leadChanges'])
   stats.leadPercentage = getVal(['leadPercentage'])
@@ -590,10 +678,43 @@ function parseBoxPlayers(
     pm: labels.indexOf('+/-'),
   }
 
-  const getCell = (row: unknown[], colIdx: number, fallback = '0'): string => {
-    if (colIdx < 0 || colIdx >= row.length) return fallback
+  const getRawCell = (row: unknown[], colIdx: number): string | null => {
+    if (colIdx < 0 || colIdx >= row.length) return null
     const val = row[colIdx]
-    return val !== undefined && val !== null && String(val).trim() ? String(val).trim() : fallback
+    if (val === undefined || val === null) return null
+    const str = String(val).trim()
+    if (!str || /^(?:--|-|—|n\/a|na|null|undefined|dnp)$/i.test(str)) return null
+    return str
+  }
+
+  const parseStrictIntCell = (row: unknown[], colIdx: number): number | null => {
+    const str = getRawCell(row, colIdx)
+    if (str === null || !/^\d+$/.test(str)) return null
+    const n = Number(str)
+    return Number.isSafeInteger(n) ? n : null
+  }
+
+  const parseMadeAttemptedCell = (row: unknown[], colIdx: number): string | null => {
+    const str = getRawCell(row, colIdx)
+    if (str === null) return null
+    const m = str.match(/^(\d+)-(\d+)$/)
+    if (!m) return null
+    const made = Number(m[1])
+    const att = Number(m[2])
+    if (!Number.isSafeInteger(made) || !Number.isSafeInteger(att) || made > att) return null
+    return `${made}-${att}`
+  }
+
+  const parsePlusMinusCell = (row: unknown[], colIdx: number): string | null => {
+    const str = getRawCell(row, colIdx)
+    if (str === null || !/^[+-]?\d+$/.test(str)) return null
+    return str
+  }
+
+  const parseMinutesCell = (row: unknown[], colIdx: number): string | null => {
+    const str = getRawCell(row, colIdx)
+    if (str === null || !/^\d+(?::\d{2})?$/.test(str)) return null
+    return str
   }
 
   const players: NBAPlayerBoxLine[] = []
@@ -612,12 +733,12 @@ function parseBoxPlayers(
       athleteHeadshots.set(id, headshot)
     }
 
-    const pts = parseInt(getCell(item.stats, idx.pts, '0'), 10) || 0
-    const reb = parseInt(getCell(item.stats, idx.reb, '0'), 10) || 0
-    const ast = parseInt(getCell(item.stats, idx.ast, '0'), 10) || 0
-    const stl = parseInt(getCell(item.stats, idx.stl, '0'), 10) || 0
-    const blk = parseInt(getCell(item.stats, idx.blk, '0'), 10) || 0
-    const tov = parseInt(getCell(item.stats, idx.to, '0'), 10) || 0
+    const pts = parseStrictIntCell(item.stats, idx.pts)
+    const reb = parseStrictIntCell(item.stats, idx.reb)
+    const ast = parseStrictIntCell(item.stats, idx.ast)
+    const stl = parseStrictIntCell(item.stats, idx.stl)
+    const blk = parseStrictIntCell(item.stats, idx.blk)
+    const tov = parseStrictIntCell(item.stats, idx.to)
 
     players.push({
       id: id || String(ath.displayName || 'player'),
@@ -627,38 +748,77 @@ function parseBoxPlayers(
       position: typeof ath.position?.abbreviation === 'string' ? ath.position.abbreviation : undefined,
       ...(headshot ? { headshot } : {}),
       starter: Boolean(item.starter),
-      min: getCell(item.stats, idx.min, '0'),
+      min: parseMinutesCell(item.stats, idx.min),
       pts,
       reb,
       ast,
-      fg: getCell(item.stats, idx.fg, '0-0'),
-      threePt: getCell(item.stats, idx.threePt, '0-0'),
-      ft: getCell(item.stats, idx.ft, '0-0'),
+      fg: parseMadeAttemptedCell(item.stats, idx.fg),
+      threePt: parseMadeAttemptedCell(item.stats, idx.threePt),
+      ft: parseMadeAttemptedCell(item.stats, idx.ft),
       stl,
       blk,
       tov,
-      plusMinus: getCell(item.stats, idx.pm, '0'),
+      plusMinus: parsePlusMinusCell(item.stats, idx.pm),
     })
   }
 
-  players.sort((a, b) => b.pts - a.pts || b.reb + b.ast - (a.reb + a.ast))
+  // Sort policy: players with known numeric PTS rank ahead of unknown (null) PTS,
+  // so an unknown PTS cell is never treated as a factual 0 when compared to a genuine 0-point game.
+  players.sort((a, b) => {
+    const aHasPts = a.pts !== null
+    const bHasPts = b.pts !== null
+    if (aHasPts !== bHasPts) return aHasPts ? -1 : 1
+    if (aHasPts && bHasPts && a.pts !== b.pts) return (b.pts as number) - (a.pts as number)
+
+    const aHasSec = a.reb !== null || a.ast !== null
+    const bHasSec = b.reb !== null || b.ast !== null
+    if (aHasSec !== bHasSec) return aHasSec ? -1 : 1
+    if (aHasSec && bHasSec) {
+      return ((b.reb ?? 0) + (b.ast ?? 0)) - ((a.reb ?? 0) + (a.ast ?? 0))
+    }
+    return 0
+  })
   return players.slice(0, 8)
+}
+
+function extractExplicitId(val: unknown): string | undefined {
+  if (typeof val === 'string') {
+    const trimmed = val.trim()
+    return trimmed || undefined
+  }
+  if (typeof val === 'number' && Number.isFinite(val)) {
+    return String(val)
+  }
+  return undefined
+}
+
+function parseExplicitGameState(val: unknown): 'pre' | 'in' | 'post' | undefined {
+  if (typeof val !== 'string') return undefined
+  const norm = val.trim().toLowerCase()
+  return norm === 'pre' || norm === 'in' || norm === 'post' ? norm : undefined
 }
 
 /**
  * Parses ESPN's game summary endpoint payload into a typed NBAGameSummary object.
+ * Validates explicit response event IDs, competition IDs, game states, team identities,
+ * and rejects empty/contentless or conflicting payloads instead of relabeling them.
  */
 export function parseSummaryPayload(
   eventId: string,
   raw: unknown,
-  context: {
-    homeTeamId?: string
-    awayTeamId?: string
-    homeAbbr?: string
-    awayAbbr?: string
-  } = {}
+  contextOrState: SummaryRequestContext | 'pre' | 'in' | 'post' = {},
+  maybeGameState?: 'pre' | 'in' | 'post'
 ): NBAGameSummary | null {
   if (!raw || typeof raw !== 'object') return null
+  const context: SummaryRequestContext =
+    typeof contextOrState === 'string' ? {} : contextOrState || {}
+  const resolvedState: 'pre' | 'in' | 'post' | undefined =
+    typeof contextOrState === 'string'
+      ? normalizeGameState(contextOrState)
+      : maybeGameState
+        ? normalizeGameState(maybeGameState)
+        : undefined
+
   const data = raw as {
     boxscore?: {
       teams?: Array<{
@@ -702,7 +862,15 @@ export function parseSummaryPayload(
     }
     plays?: unknown[]
     header?: {
+      id?: unknown
       competitions?: Array<{
+        id?: unknown
+        status?: {
+          type?: {
+            state?: unknown
+            completed?: unknown
+          }
+        }
         competitors?: Array<{
           id?: unknown
           homeAway?: unknown
@@ -712,36 +880,83 @@ export function parseSummaryPayload(
     }
   }
 
+  // Validate explicit response event ID and competition ID against each other and requested eventId
+  const requestedEventId = extractExplicitId(eventId)
+  const headerEventId = extractExplicitId(data.header?.id)
+  const headerCompetition = data.header?.competitions?.[0]
+  const compEventId = extractExplicitId(headerCompetition?.id)
+  const headerState = parseExplicitGameState(headerCompetition?.status?.type?.state)
+
+  if (headerEventId && compEventId && headerEventId !== compEventId) return null
+  if (headerEventId && requestedEventId && headerEventId !== requestedEventId) return null
+  if (compEventId && requestedEventId && compEventId !== requestedEventId) return null
+
+  // Reject explicit response state mismatches (e.g. lagging pre payload for in/post consumer, or in payload for post consumer)
+  if (resolvedState && headerState && headerState !== resolvedState) return null
+  const effectiveGameState = headerState ?? resolvedState
+
   // Resolve home & away team IDs from header or context
-  const headerComps = data.header?.competitions?.[0]?.competitors || []
+  const headerComps = headerCompetition?.competitors || []
   const resolvedHomeComp = headerComps.find((c) => c.homeAway === 'home')
   const resolvedAwayComp = headerComps.find((c) => c.homeAway === 'away')
 
-  const homeTeamId =
-    context.homeTeamId ||
-    (resolvedHomeComp?.team?.id ? String(resolvedHomeComp.team.id) : resolvedHomeComp?.id ? String(resolvedHomeComp.id) : undefined)
-  const awayTeamId =
-    context.awayTeamId ||
-    (resolvedAwayComp?.team?.id ? String(resolvedAwayComp.team.id) : resolvedAwayComp?.id ? String(resolvedAwayComp.id) : undefined)
-  const homeAbbr =
-    context.homeAbbr ||
-    (typeof resolvedHomeComp?.team?.abbreviation === 'string' ? resolvedHomeComp.team.abbreviation : 'HOME')
-  const awayAbbr =
-    context.awayAbbr ||
-    (typeof resolvedAwayComp?.team?.abbreviation === 'string' ? resolvedAwayComp.team.abbreviation : 'AWAY')
+  const headerHomeId = resolvedHomeComp?.team?.id
+    ? String(resolvedHomeComp.team.id)
+    : resolvedHomeComp?.id
+      ? String(resolvedHomeComp.id)
+      : undefined
+  const headerAwayId = resolvedAwayComp?.team?.id
+    ? String(resolvedAwayComp.team.id)
+    : resolvedAwayComp?.id
+      ? String(resolvedAwayComp.id)
+      : undefined
+  const headerHomeAbbr =
+    typeof resolvedHomeComp?.team?.abbreviation === 'string' ? resolvedHomeComp.team.abbreviation : undefined
+  const headerAwayAbbr =
+    typeof resolvedAwayComp?.team?.abbreviation === 'string' ? resolvedAwayComp.team.abbreviation : undefined
+
+  // If context specifies expected teams and payload header specifies conflicting teams, reject payload
+  if (context.homeTeamId && headerHomeId && context.homeTeamId !== headerHomeId) return null
+  if (context.awayTeamId && headerAwayId && context.awayTeamId !== headerAwayId) return null
+  if (
+    context.homeAbbr &&
+    headerHomeAbbr &&
+    normalizeTeamAbbr(context.homeAbbr) !== normalizeTeamAbbr(headerHomeAbbr)
+  ) {
+    return null
+  }
+  if (
+    context.awayAbbr &&
+    headerAwayAbbr &&
+    normalizeTeamAbbr(context.awayAbbr) !== normalizeTeamAbbr(headerAwayAbbr)
+  ) {
+    return null
+  }
+
+  const homeTeamId = context.homeTeamId || headerHomeId
+  const awayTeamId = context.awayTeamId || headerAwayId
+  const homeAbbr = context.homeAbbr || headerHomeAbbr || 'HOME'
+  const awayAbbr = context.awayAbbr || headerAwayAbbr || 'AWAY'
 
   const athleteHeadshots = new Map<string, string>()
 
   const buildTeamSummary = (side: 'home' | 'away'): NBATeamSummary | null => {
     const targetId = side === 'home' ? homeTeamId : awayTeamId
     const targetAbbr = side === 'home' ? homeAbbr : awayAbbr
+    const normTargetAbbr =
+      targetAbbr && targetAbbr !== 'HOME' && targetAbbr !== 'AWAY' ? normalizeTeamAbbr(targetAbbr) : ''
 
     const matchesTeam = (teamObj?: { id?: unknown; abbreviation?: unknown }, explicitSide?: unknown) => {
+      const objId = teamObj?.id !== undefined && teamObj?.id !== null ? String(teamObj.id) : ''
+      const objAbbr = typeof teamObj?.abbreviation === 'string' ? teamObj.abbreviation.trim() : ''
+
+      // Never match a team object whose explicit ID or abbreviation conflicts with target context
+      if (targetId && objId && objId !== targetId) return false
+      if (normTargetAbbr && objAbbr && normalizeTeamAbbr(objAbbr) !== normTargetAbbr) return false
+
+      if (targetId && objId && objId === targetId) return true
+      if (normTargetAbbr && objAbbr && normalizeTeamAbbr(objAbbr) === normTargetAbbr) return true
       if (explicitSide === side) return true
-      if (targetId && teamObj?.id && String(teamObj.id) === targetId) return true
-      if (targetAbbr && typeof teamObj?.abbreviation === 'string' && teamObj.abbreviation.toUpperCase() === targetAbbr.toUpperCase()) {
-        return true
-      }
       return false
     }
 
@@ -783,9 +998,27 @@ export function parseSummaryPayload(
           }))
       : []
 
+    const resolvedTeamId =
+      String(
+        boxTeam?.team?.id ||
+          leaderGroup?.team?.id ||
+          playerGroup?.team?.id ||
+          injuryGroup?.team?.id ||
+          lastFiveGroup?.team?.id ||
+          targetId ||
+          ''
+      )
+    const resolvedTeamAbbr =
+      (typeof boxTeam?.team?.abbreviation === 'string' && boxTeam.team.abbreviation) ||
+      (typeof leaderGroup?.team?.abbreviation === 'string' && leaderGroup.team.abbreviation) ||
+      (typeof playerGroup?.team?.abbreviation === 'string' && playerGroup.team.abbreviation) ||
+      (typeof injuryGroup?.team?.abbreviation === 'string' && injuryGroup.team.abbreviation) ||
+      (typeof lastFiveGroup?.team?.abbreviation === 'string' && lastFiveGroup.team.abbreviation) ||
+      targetAbbr
+
     return {
-      teamId: targetId || String(boxTeam?.team?.id || ''),
-      abbreviation: targetAbbr,
+      teamId: resolvedTeamId,
+      abbreviation: resolvedTeamAbbr,
       homeAway: side,
       leaders,
       stats,
@@ -797,6 +1030,31 @@ export function parseSummaryPayload(
 
   const awayTeam = buildTeamSummary('away')
   const homeTeam = buildTeamSummary('home')
+
+  // If context specifies expected teams and the payload carries team sections yet NONE matched, reject mismatched payload
+  const hasContextTeamConstraint = Boolean(
+    context.homeTeamId || context.awayTeamId || context.homeAbbr || context.awayAbbr
+  )
+  const payloadHasTeamSections = Boolean(
+    (Array.isArray(data.boxscore?.teams) && data.boxscore.teams.length > 0) ||
+      (Array.isArray(data.boxscore?.players) && data.boxscore.players.length > 0) ||
+      (Array.isArray(data.leaders) && data.leaders.length > 0) ||
+      (Array.isArray(data.injuries) && data.injuries.length > 0) ||
+      (Array.isArray(data.lastFiveGames) && data.lastFiveGames.length > 0)
+  )
+  if (hasContextTeamConstraint && payloadHasTeamSections && !awayTeam && !homeTeam) {
+    return null
+  }
+
+  // Cross-attribute opponent's Points Conceded Off Turnovers to Points Scored Off Turnovers when both teams are present
+  if (awayTeam && homeTeam) {
+    if (awayTeam.stats.pointsConcededOffTurnovers && !homeTeam.stats.pointsScoredOffTurnovers) {
+      homeTeam.stats.pointsScoredOffTurnovers = awayTeam.stats.pointsConcededOffTurnovers
+    }
+    if (homeTeam.stats.pointsConcededOffTurnovers && !awayTeam.stats.pointsScoredOffTurnovers) {
+      awayTeam.stats.pointsScoredOffTurnovers = homeTeam.stats.pointsConcededOffTurnovers
+    }
+  }
 
   const shots: NBAShot[] = []
   if (Array.isArray(data.plays)) {
@@ -835,8 +1093,26 @@ export function parseSummaryPayload(
         .filter(Boolean)
     : undefined
 
+  // Conservative incomplete/empty payload policy: reject empty or contentless successful JSON responses
+  const hasMeaningfulContent = Boolean(
+    awayTeam ||
+      homeTeam ||
+      shots.length > 0 ||
+      predictor ||
+      seasonSeries ||
+      attendance !== undefined ||
+      (officials && officials.length > 0)
+  )
+  if (!hasMeaningfulContent) {
+    return null
+  }
+
   return {
-    eventId,
+    eventId: headerEventId ?? compEventId ?? eventId,
+    ...(effectiveGameState ? { gameState: effectiveGameState } : {}),
+    provenance: 'live',
+    isStale: false,
+    fetchedAt: Date.now(),
     awayTeam,
     homeTeam,
     shots,
@@ -849,31 +1125,53 @@ export function parseSummaryPayload(
 
 /**
  * Fetches rich game summary intelligence (scouting splits, injuries, last-5, full box score, and shots)
- * for a spotlighted NBA event with TTL caching, in-flight deduplication, and silent graceful fallback.
+ * for a spotlighted NBA event with state+team-scoped TTL caching, subscriber-isolated in-flight deduplication,
+ * per-key generation ownership, and safe same-state fallback.
  */
 export function fetchNBAGameSummary(
   eventId: string,
   gameState: 'pre' | 'in' | 'post' | string = 'pre',
   signal?: AbortSignal,
-  context: {
-    homeTeamId?: string
-    awayTeamId?: string
-    homeAbbr?: string
-    awayAbbr?: string
-  } = {}
+  context: SummaryRequestContext = {}
 ): Promise<NBAGameSummary | null> {
   const cleanId = typeof eventId === 'string' ? eventId.replace(/[^A-Za-z0-9_-]/g, '') : ''
   if (!cleanId) return Promise.resolve(null)
 
-  const mockSummary = MOCK_GAME_SUMMARIES.get(cleanId)
-  if (mockSummary) {
-    return Promise.resolve(mockSummary)
+  const normState = normalizeGameState(gameState)
+
+  // Only allow explicit demo-namespaced IDs to resolve from MOCK_GAME_SUMMARIES, and validate team/state context
+  if (cleanId.startsWith('demo-mock-')) {
+    const mockSummary = MOCK_GAME_SUMMARIES.get(cleanId)
+    if (mockSummary && (!mockSummary.gameState || mockSummary.gameState === normState)) {
+      const awayMatches =
+        (!context.awayTeamId || mockSummary.awayTeam?.teamId === context.awayTeamId) &&
+        (!context.awayAbbr ||
+          normalizeTeamAbbr(mockSummary.awayTeam?.abbreviation) === normalizeTeamAbbr(context.awayAbbr))
+      const homeMatches =
+        (!context.homeTeamId || mockSummary.homeTeam?.teamId === context.homeTeamId) &&
+        (!context.homeAbbr ||
+          normalizeTeamAbbr(mockSummary.homeTeam?.abbreviation) === normalizeTeamAbbr(context.homeAbbr))
+      if (awayMatches && homeMatches) {
+        return Promise.resolve({
+          ...mockSummary,
+          gameState: normState,
+          provenance: 'demo',
+          isStale: false,
+        })
+      }
+    }
+    return Promise.resolve(null)
   }
 
-  const cacheKey = cleanId
+  const cacheKey = buildSummaryIdentityKey(cleanId, normState, context)
   const cached = SUMMARY_CACHE.get(cacheKey)
-  if (cached && cached.gameState === gameState && Date.now() < cached.expiresAt) {
-    return Promise.resolve(cached.data)
+  if (!context.forceRefresh && cached && cached.gameState === normState && Date.now() < cached.expiresAt) {
+    return Promise.resolve({
+      ...cached.data,
+      gameState: normState,
+      provenance: 'cache',
+      isStale: false,
+    })
   }
 
   if (signal?.aborted) {
@@ -882,104 +1180,168 @@ export function fetchNBAGameSummary(
     return Promise.reject(abortErr)
   }
 
-  const inFlight = IN_FLIGHT_SUMMARY_REQUESTS.get(cacheKey)
-  if (inFlight) {
-    if (!signal) return inFlight
-    return new Promise<NBAGameSummary | null>((resolve, reject) => {
-      const onAbort = () => {
-        const abortErr = new Error('The operation was aborted.')
-        abortErr.name = 'AbortError'
-        reject(abortErr)
-      }
-      signal.addEventListener('abort', onAbort, { once: true })
-      inFlight.then(
-        (res) => {
-          signal.removeEventListener('abort', onAbort)
-          resolve(res)
-        },
-        (err) => {
-          signal.removeEventListener('abort', onAbort)
-          reject(err)
+  let inFlight = IN_FLIGHT_SUMMARY_REQUESTS.get(cacheKey)
+  if (!inFlight) {
+    const sharedController = new AbortController()
+    const subscribers = new Set<symbol>()
+    const requestEpoch = summaryCacheEpoch
+    const requestGen = ++summaryRequestSeq
+    SUMMARY_LATEST_KEY_GEN.set(cacheKey, requestGen)
+
+    const isCacheWriteAuthorized = (): boolean =>
+      !sharedController.signal.aborted &&
+      requestEpoch === summaryCacheEpoch &&
+      SUMMARY_LATEST_KEY_GEN.get(cacheKey) === requestGen
+
+    const makeStaleFallback = (): NBAGameSummary | null => {
+      if (sharedController.signal.aborted) return null
+      if (cached && cached.gameState === normState) {
+        return {
+          ...cached.data,
+          gameState: normState,
+          provenance: 'stale-cache',
+          isStale: true,
         }
-      )
-    })
-  }
-
-  const executeFetch = async (): Promise<NBAGameSummary | null> => {
-    const url = new URL(ESPN_NBA_SUMMARY_URL)
-    url.searchParams.set('event', cleanId)
-
-    try {
-      const fetchRaw = async (fetchSignal?: AbortSignal) => {
-        const response = await fetch(url.toString(), {
-          signal: fetchSignal,
-          headers: { Accept: 'application/json' },
-        })
-        if (!response.ok) {
-          if (response.status >= 500 || response.status === 429) {
-            throw new TransientNetworkError(`ESPN Summary API returned ${response.status}`, response.status)
-          }
-          throw new DashboardDomainError(`ESPN Summary API returned ${response.status}`, `HTTP_${response.status}`)
-        }
-        return response.json()
       }
-
-      const rawData = await withExponentialBackoff(
-        fetchRaw,
-        { maxRetries: 1, initialDelayMs: 60, maxDelayMs: 180, jitter: false },
-        signal
-      )
-
-      const parsed = parseSummaryPayload(cleanId, rawData, context)
-      if (!parsed) return null
-
-      const ttlMs = gameState === 'in' ? 15_000 : gameState === 'post' ? 1_800_000 : 300_000
-      if (SUMMARY_CACHE.size >= MAX_SUMMARY_CACHE_ENTRIES) {
-        const oldestKey = SUMMARY_CACHE.keys().next().value
-        if (oldestKey) SUMMARY_CACHE.delete(oldestKey)
-      }
-      SUMMARY_CACHE.set(cacheKey, {
-        data: parsed,
-        gameState,
-        expiresAt: Date.now() + ttlMs,
-      })
-
-      return parsed
-    } catch (err: unknown) {
-      if (isAbortError(err)) throw err
-      logger.warn('Game summary fetch unavailable; using scoreboard baseline data', { eventId: cleanId }, err)
-      return cached?.data ?? null
+      return null
     }
+
+    const executeFetch = async (): Promise<NBAGameSummary | null> => {
+      const url = new URL(ESPN_NBA_SUMMARY_URL)
+      url.searchParams.set('event', cleanId)
+
+      try {
+        const fetchRaw = async (fetchSignal?: AbortSignal) => {
+          const response = await fetch(url.toString(), {
+            signal: fetchSignal,
+            headers: { Accept: 'application/json' },
+          })
+          if (fetchSignal?.aborted) {
+            const abortErr = new Error('The operation was aborted.')
+            abortErr.name = 'AbortError'
+            throw abortErr
+          }
+          if (!response.ok) {
+            if (response.status >= 500 || response.status === 429) {
+              throw new TransientNetworkError(`ESPN Summary API returned ${response.status}`, response.status)
+            }
+            throw new DashboardDomainError(`ESPN Summary API returned ${response.status}`, `HTTP_${response.status}`)
+          }
+          return response.json()
+        }
+
+        const rawData = await withExponentialBackoff(
+          fetchRaw,
+          { maxRetries: 1, initialDelayMs: 60, maxDelayMs: 180, jitter: false },
+          sharedController.signal
+        )
+
+        // Never parse, publish, or cache a response whose shared request was already aborted
+        if (sharedController.signal.aborted) {
+          return null
+        }
+
+        const parsed = parseSummaryPayload(cleanId, rawData, context, normState)
+        if (!parsed) {
+          return makeStaleFallback()
+        }
+
+        // Write to cache ONLY if still active, same cache epoch, and still latest owner for this cacheKey
+        if (isCacheWriteAuthorized()) {
+          const ttlMs = getSummaryCacheTtlMs(normState)
+          if (SUMMARY_CACHE.size >= MAX_SUMMARY_CACHE_ENTRIES) {
+            const oldestKey = SUMMARY_CACHE.keys().next().value
+            if (oldestKey) SUMMARY_CACHE.delete(oldestKey)
+          }
+          SUMMARY_CACHE.set(cacheKey, {
+            data: parsed,
+            gameState: normState,
+            expiresAt: Date.now() + ttlMs,
+          })
+        }
+
+        return parsed
+      } catch (err: unknown) {
+        if (isAbortError(err) || sharedController.signal.aborted) throw err
+        logger.warn('Game summary fetch unavailable; checking same-state cache fallback', { eventId: cleanId, gameState: normState }, err)
+        return makeStaleFallback()
+      }
+    }
+
+    const promise = executeFetch().finally(() => {
+      const current = IN_FLIGHT_SUMMARY_REQUESTS.get(cacheKey)
+      if (current && current.controller === sharedController) {
+        IN_FLIGHT_SUMMARY_REQUESTS.delete(cacheKey)
+      }
+    })
+    // Guard against unhandledRejection if all subscribers detach/abort before an async rejection settles
+    promise.catch(() => {})
+
+    inFlight = {
+      promise,
+      controller: sharedController,
+      subscribers,
+      generation: requestGen,
+    }
+    IN_FLIGHT_SUMMARY_REQUESTS.set(cacheKey, inFlight)
   }
 
-  const fetchPromise = executeFetch().finally(() => {
-    IN_FLIGHT_SUMMARY_REQUESTS.delete(cacheKey)
-  })
+  const activeEntry = inFlight
+  const subId = Symbol('summary-subscriber')
+  activeEntry.subscribers.add(subId)
 
-  IN_FLIGHT_SUMMARY_REQUESTS.set(cacheKey, fetchPromise)
+  return new Promise<NBAGameSummary | null>((resolve, reject) => {
+    let settled = false
+    const cleanup = () => {
+      if (signal) signal.removeEventListener('abort', onAbort)
+    }
 
-  if (signal) {
-    return new Promise<NBAGameSummary | null>((resolve, reject) => {
-      const onAbort = () => {
-        const abortErr = new Error('The operation was aborted.')
-        abortErr.name = 'AbortError'
-        reject(abortErr)
+    const onAbort = () => {
+      if (settled) return
+      settled = true
+      cleanup()
+      activeEntry.subscribers.delete(subId)
+      if (activeEntry.subscribers.size === 0) {
+        const current = IN_FLIGHT_SUMMARY_REQUESTS.get(cacheKey)
+        if (current === activeEntry) {
+          IN_FLIGHT_SUMMARY_REQUESTS.delete(cacheKey)
+        }
+        // Invalidate this aborted request's cache-write authority immediately
+        if (SUMMARY_LATEST_KEY_GEN.get(cacheKey) === activeEntry.generation) {
+          SUMMARY_LATEST_KEY_GEN.set(cacheKey, ++summaryRequestSeq)
+        }
+        activeEntry.controller.abort()
+      }
+      const abortErr = new Error('The operation was aborted.')
+      abortErr.name = 'AbortError'
+      reject(abortErr)
+    }
+
+    if (signal) {
+      if (signal.aborted) {
+        onAbort()
+        return
       }
       signal.addEventListener('abort', onAbort, { once: true })
-      fetchPromise.then(
-        (res) => {
-          signal.removeEventListener('abort', onAbort)
-          resolve(res)
-        },
-        (err) => {
-          signal.removeEventListener('abort', onAbort)
-          reject(err)
-        }
-      )
-    })
-  }
+    }
 
-  return fetchPromise
+    activeEntry.promise.then(
+      (res) => {
+        if (settled) return
+        settled = true
+        cleanup()
+        activeEntry.subscribers.delete(subId)
+        resolve(res)
+      },
+      (err) => {
+        if (settled) return
+        settled = true
+        cleanup()
+        activeEntry.subscribers.delete(subId)
+        reject(err)
+      }
+    )
+  })
 }
 
 // -----------------------------------------------------------------------------
@@ -1112,8 +1474,9 @@ const MOCK_CELTICS_PISTONS_SHOTS: NBAShot[] = [
 export const MOCK_NBA_EVENTS: NBAEvent[] = [
   // 1. Boston Celtics at Detroit Pistons (Live 4th Quarter Clutch Thriller)
   {
-    id: '401909088',
-    uid: 's:40~l:46~e:401909088',
+    id: 'demo-mock-401909088',
+    uid: 's:40~l:46~e:demo-mock-401909088',
+    isDemo: true,
     date: new Date().toISOString(),
     name: 'Boston Celtics at Detroit Pistons',
     shortName: 'BOS @ DET',
@@ -1133,8 +1496,8 @@ export const MOCK_NBA_EVENTS: NBAEvent[] = [
     },
     competitions: [
       {
-        id: '401909088',
-        uid: 's:40~l:46~e:401909088~c:401909088',
+        id: 'demo-mock-401909088',
+        uid: 's:40~l:46~e:demo-mock-401909088~c:demo-mock-401909088',
         date: new Date().toISOString(),
         venue: {
           fullName: 'Little Caesars Arena',
@@ -1249,8 +1612,9 @@ export const MOCK_NBA_EVENTS: NBAEvent[] = [
 
   // 2. Philadelphia 76ers at New York Knicks (Live Halftime at MSG)
   {
-    id: '401909089',
-    uid: 's:40~l:46~e:401909089',
+    id: 'demo-mock-401909089',
+    uid: 's:40~l:46~e:demo-mock-401909089',
+    isDemo: true,
     date: new Date().toISOString(),
     name: 'Philadelphia 76ers at New York Knicks',
     shortName: 'PHI @ NYK',
@@ -1270,8 +1634,8 @@ export const MOCK_NBA_EVENTS: NBAEvent[] = [
     },
     competitions: [
       {
-        id: '401909089',
-        uid: 's:40~l:46~e:401909089~c:401909089',
+        id: 'demo-mock-401909089',
+        uid: 's:40~l:46~e:demo-mock-401909089~c:demo-mock-401909089',
         date: new Date().toISOString(),
         venue: {
           fullName: 'Madison Square Garden',
@@ -1367,8 +1731,9 @@ export const MOCK_NBA_EVENTS: NBAEvent[] = [
 
   // 3. Golden State Warriors at Los Angeles Lakers (Live 3rd Quarter Showdown)
   {
-    id: '401909090',
-    uid: 's:40~l:46~e:401909090',
+    id: 'demo-mock-401909090',
+    uid: 's:40~l:46~e:demo-mock-401909090',
+    isDemo: true,
     date: new Date().toISOString(),
     name: 'Golden State Warriors at Los Angeles Lakers',
     shortName: 'GSW @ LAL',
@@ -1388,8 +1753,8 @@ export const MOCK_NBA_EVENTS: NBAEvent[] = [
     },
     competitions: [
       {
-        id: '401909090',
-        uid: 's:40~l:46~e:401909090~c:401909090',
+        id: 'demo-mock-401909090',
+        uid: 's:40~l:46~e:demo-mock-401909090~c:demo-mock-401909090',
         date: new Date().toISOString(),
         venue: {
           fullName: 'Crypto.com Arena',
@@ -1494,8 +1859,9 @@ export const MOCK_NBA_EVENTS: NBAEvent[] = [
 
   // 4. Oklahoma City Thunder at San Antonio Spurs (Upcoming Showcase)
   {
-    id: '401909091',
-    uid: 's:40~l:46~e:401909091',
+    id: 'demo-mock-401909091',
+    uid: 's:40~l:46~e:demo-mock-401909091',
+    isDemo: true,
     date: new Date(Date.now() + 3600000 * 2).toISOString(),
     name: 'Oklahoma City Thunder at San Antonio Spurs',
     shortName: 'OKC @ SAS',
@@ -1515,8 +1881,8 @@ export const MOCK_NBA_EVENTS: NBAEvent[] = [
     },
     competitions: [
       {
-        id: '401909091',
-        uid: 's:40~l:46~e:401909091~c:401909091',
+        id: 'demo-mock-401909091',
+        uid: 's:40~l:46~e:demo-mock-401909091~c:demo-mock-401909091',
         date: new Date(Date.now() + 3600000 * 2).toISOString(),
         venue: {
           fullName: 'Frost Bank Center',
@@ -1652,10 +2018,10 @@ export const MOCK_NBA_EVENTS: NBAEvent[] = [
               { name: 'Road', type: 'road', summary: '25-16' },
             ],
             statistics: [
-              { name: 'avgPoints', abbreviation: 'PTS', displayValue: '120.4', rankDisplayValue: '3rd' },
-              { name: 'fieldGoalPct', abbreviation: 'FG%', displayValue: '49.1', rankDisplayValue: '2nd' },
-              { name: 'threePointPct', abbreviation: '3P%', displayValue: '38.4', rankDisplayValue: '2nd' },
-              { name: 'freeThrowPct', abbreviation: 'FT%', displayValue: '81.9', rankDisplayValue: '4th' },
+              { name: 'avgPoints', abbreviation: 'PTS', displayValue: '120.4', rankDisplayValue: '3rd', verifiedRank: true, rankScope: 'NBA Per-Game' },
+              { name: 'fieldGoalPct', abbreviation: 'FG%', displayValue: '49.1', rankDisplayValue: '2nd', verifiedRank: true, rankScope: 'NBA Season' },
+              { name: 'threePointPct', abbreviation: '3P%', displayValue: '38.4', rankDisplayValue: '2nd', verifiedRank: true, rankScope: 'NBA Season' },
+              { name: 'freeThrowPct', abbreviation: 'FT%', displayValue: '81.9', rankDisplayValue: '4th', verifiedRank: true, rankScope: 'NBA Season' },
               { name: 'avgRebounds', abbreviation: 'REB', displayValue: '44.9' },
               { name: 'avgAssists', abbreviation: 'AST', displayValue: '27.2' },
             ],
@@ -1745,8 +2111,9 @@ export const MOCK_NBA_EVENTS: NBAEvent[] = [
 
   // 5. Denver Nuggets at Minnesota Timberwolves (Final / OT Thriller with Scorigami!)
   {
-    id: '401909092',
-    uid: 's:40~l:46~e:401909092',
+    id: 'demo-mock-401909092',
+    uid: 's:40~l:46~e:demo-mock-401909092',
+    isDemo: true,
     date: new Date(Date.now() - 3600000 * 4).toISOString(),
     name: 'Denver Nuggets at Minnesota Timberwolves',
     shortName: 'DEN @ MIN',
@@ -1766,8 +2133,8 @@ export const MOCK_NBA_EVENTS: NBAEvent[] = [
     },
     competitions: [
       {
-        id: '401909092',
-        uid: 's:40~l:46~e:401909092~c:401909092',
+        id: 'demo-mock-401909092',
+        uid: 's:40~l:46~e:demo-mock-401909092~c:demo-mock-401909092',
         date: new Date(Date.now() - 3600000 * 4).toISOString(),
         venue: {
           fullName: 'Target Center',
@@ -2014,9 +2381,11 @@ export const MOCK_NBA_EVENTS: NBAEvent[] = [
 
 const MOCK_GAME_SUMMARIES = new Map<string, NBAGameSummary>([
   [
-    '401909091',
+    'demo-mock-401909091',
     {
-      eventId: '401909091',
+      eventId: 'demo-mock-401909091',
+      gameState: 'pre',
+      provenance: 'demo',
       seasonSeries: 'OKC leads season series 2-1',
       predictor: { awayWinPct: 64.2, homeWinPct: 35.8 },
       shots: [],
@@ -2085,9 +2454,11 @@ const MOCK_GAME_SUMMARIES = new Map<string, NBAGameSummary>([
     },
   ],
   [
-    '401909092',
+    'demo-mock-401909092',
     {
-      eventId: '401909092',
+      eventId: 'demo-mock-401909092',
+      gameState: 'post',
+      provenance: 'demo',
       attendance: 18978,
       shots: [
         {
@@ -2170,9 +2541,12 @@ const MOCK_GAME_SUMMARIES = new Map<string, NBAGameSummary>([
           steals: '6',
           blocks: '4',
           turnovers: '13',
+          totalTurnovers: '13',
           pointsInPaint: '52',
           fastBreakPoints: '14',
-          turnoverPoints: '15',
+          turnoverPoints: '18',
+          pointsConcededOffTurnovers: '18',
+          pointsScoredOffTurnovers: '15',
           largestLead: '8',
           leadChanges: '14',
         },
@@ -2257,9 +2631,12 @@ const MOCK_GAME_SUMMARIES = new Map<string, NBAGameSummary>([
           steals: '8',
           blocks: '7',
           turnovers: '11',
+          totalTurnovers: '11',
           pointsInPaint: '48',
           fastBreakPoints: '19',
-          turnoverPoints: '18',
+          turnoverPoints: '15',
+          pointsConcededOffTurnovers: '15',
+          pointsScoredOffTurnovers: '18',
           largestLead: '10',
           leadChanges: '14',
         },

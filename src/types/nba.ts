@@ -28,6 +28,8 @@ export interface NBACompetitorStat {
   abbreviation?: string
   displayValue: string
   rankDisplayValue?: string
+  verifiedRank?: boolean
+  rankScope?: string
   label?: string
 }
 
@@ -193,17 +195,17 @@ export interface NBAPlayerBoxLine {
   position?: string
   headshot?: string
   starter?: boolean
-  min: string
-  pts: number
-  reb: number
-  ast: number
-  fg: string
-  threePt: string
-  ft: string
-  stl: number
-  blk: number
-  tov: number
-  plusMinus: string
+  min: string | null
+  pts: number | null
+  reb: number | null
+  ast: number | null
+  fg: string | null
+  threePt: string | null
+  ft: string | null
+  stl: number | null
+  blk: number | null
+  tov: number | null
+  plusMinus: string | null
 }
 
 export interface NBAInjuryItem {
@@ -233,6 +235,8 @@ export interface NBATeamSummaryStats {
   avgSteals?: string
   avgBlocks?: string
   avgTurnovers?: string
+  avgTotalTurnovers?: string
+  avgTeamTurnovers?: string
   fgMadeAttempted?: string
   threePtMadeAttempted?: string
   ftMadeAttempted?: string
@@ -243,9 +247,14 @@ export interface NBATeamSummaryStats {
   steals?: string
   blocks?: string
   turnovers?: string
+  totalTurnovers?: string
+  playerTurnovers?: string
+  teamTurnovers?: string
   pointsInPaint?: string
   fastBreakPoints?: string
   turnoverPoints?: string
+  pointsConcededOffTurnovers?: string
+  pointsScoredOffTurnovers?: string
   largestLead?: string
   leadChanges?: string
   leadPercentage?: string
@@ -264,6 +273,10 @@ export interface NBATeamSummary {
 
 export interface NBAGameSummary {
   eventId: string
+  gameState?: 'pre' | 'in' | 'post'
+  provenance?: 'live' | 'cache' | 'stale-cache' | 'demo'
+  isStale?: boolean
+  fetchedAt?: number
   awayTeam: NBATeamSummary | null
   homeTeam: NBATeamSummary | null
   shots: NBAShot[]
@@ -309,6 +322,7 @@ export interface NBAEvent {
   date: string
   name: string
   shortName: string
+  isDemo?: boolean
   season?: {
     year: number
     type: number
