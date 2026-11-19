@@ -290,14 +290,38 @@ export function extractRecordSummary(
   }
 }
 
-function findLeaderEntry(leaders: NBALeader[] | undefined, keys: string[]) {
+const SEASON_AVG_CATEGORY_PATTERN = /per\s*game|pergame|\b(ppg|rpg|apg)\b|\bavg\b|average/i
+
+function isSeasonAverageLeaderGroup(group: NBALeader): boolean {
+  const fields = [group.name, group.displayName, group.shortDisplayName, group.abbreviation]
+  return fields.some((f) => typeof f === 'string' && SEASON_AVG_CATEGORY_PATTERN.test(f))
+}
+
+function isNonIntegerGameTotalEntry(entry: NBALeader['leaders'][number]): boolean {
+  if (typeof entry.displayValue === 'string' && /\d+\.\d+/.test(entry.displayValue.trim())) {
+    return true
+  }
+  if (typeof entry.value === 'number' && Number.isFinite(entry.value) && !Number.isInteger(entry.value)) {
+    return true
+  }
+  return false
+}
+
+function findLeaderEntry(
+  leaders: NBALeader[] | undefined,
+  keys: string[],
+  mode: 'pre' | 'game' = 'pre'
+) {
   if (!Array.isArray(leaders)) return null
   for (const key of keys) {
-    const group = leaders.find((l) => l.name === key || l.shortDisplayName === key || l.abbreviation === key)
+    const group = leaders.find((l) => {
+      if (mode === 'game' && isSeasonAverageLeaderGroup(l)) return false
+      return l.name === key || l.shortDisplayName === key || l.abbreviation === key
+    })
     const entry = group?.leaders?.[0]
-    if (entry && entry.athlete) {
-      return { group, entry }
-    }
+    if (!entry || !entry.athlete) continue
+    if (mode === 'game' && isNonIntegerGameTotalEntry(entry)) continue
+    return { group, entry }
   }
   return null
 }
@@ -309,6 +333,7 @@ function normalizeName(name?: string): string {
 /**
  * Extracts top Scorer, Rebounder, and Assister for a team in pre, live, or post mode.
  * Enriches with player headshots, boxscore lines, season averages, and injury alerts.
+ * Strictly keeps season-average categories out of live/post game totals.
  */
 export function extractStatLeaders(
   competitor?: NBACompetitor,
@@ -316,6 +341,7 @@ export function extractStatLeaders(
   gameState: 'pre' | 'in' | 'post' | string = 'pre'
 ): NormalizedStatLeader[] {
   const isPre = gameState === 'pre'
+  const leaderMode: 'pre' | 'game' = isPre ? 'pre' : 'game'
   const validSummary = getValidatedTeamSummary(teamSummary, competitor)
 
   // Prefer scoreboard leaders immediately, merge validated summary leaders for extra summary line / headshots
@@ -339,8 +365,8 @@ export function extractStatLeaders(
     }
   }
 
-  // Extract overall rating line from scoreboard if present (e.g. "24.1 PPG, 4.9 RPG, 5.5 APG...")
-  const ratingMatch = findLeaderEntry(primaryLeaders, ['rating'])
+  // Extract overall rating line from scoreboard if present in pre-game mode
+  const ratingMatch = isPre ? findLeaderEntry(primaryLeaders, ['rating'], 'pre') : null
 
   const specs: Array<{
     category: 'PTS' | 'REB' | 'AST'
@@ -349,21 +375,21 @@ export function extractStatLeaders(
     keys: string[]
   }> = isPre
     ? [
-        { category: 'PTS', categoryLabel: 'Scoring Leader', unit: 'PPG', keys: ['pointsPerGame', 'points', 'PPG'] },
-        { category: 'REB', categoryLabel: 'Rebound Leader', unit: 'RPG', keys: ['reboundsPerGame', 'rebounds', 'RPG'] },
-        { category: 'AST', categoryLabel: 'Assist Leader', unit: 'APG', keys: ['assistsPerGame', 'assists', 'APG'] },
+        { category: 'PTS', categoryLabel: 'Scoring Leader', unit: 'PPG', keys: ['pointsPerGame', 'PPG', 'points'] },
+        { category: 'REB', categoryLabel: 'Rebound Leader', unit: 'RPG', keys: ['reboundsPerGame', 'RPG', 'rebounds'] },
+        { category: 'AST', categoryLabel: 'Assist Leader', unit: 'APG', keys: ['assistsPerGame', 'APG', 'assists'] },
       ]
     : [
-        { category: 'PTS', categoryLabel: 'Points Leader', unit: 'PTS', keys: ['points', 'Pts', 'pointsPerGame'] },
-        { category: 'REB', categoryLabel: 'Rebounds Leader', unit: 'REB', keys: ['rebounds', 'Reb', 'reboundsPerGame'] },
-        { category: 'AST', categoryLabel: 'Assists Leader', unit: 'AST', keys: ['assists', 'Ast', 'assistsPerGame'] },
+        { category: 'PTS', categoryLabel: 'Points Leader', unit: 'PTS', keys: ['points', 'Pts', 'PTS'] },
+        { category: 'REB', categoryLabel: 'Rebounds Leader', unit: 'REB', keys: ['rebounds', 'Reb', 'REB'] },
+        { category: 'AST', categoryLabel: 'Assists Leader', unit: 'AST', keys: ['assists', 'Ast', 'AST'] },
       ]
 
   const result: NormalizedStatLeader[] = []
 
   for (const spec of specs) {
-    const primaryMatch = findLeaderEntry(primaryLeaders, spec.keys)
-    const secondaryMatch = findLeaderEntry(secondaryLeaders, spec.keys)
+    const primaryMatch = findLeaderEntry(primaryLeaders, spec.keys, leaderMode)
+    const secondaryMatch = findLeaderEntry(secondaryLeaders, spec.keys, leaderMode)
     const match = primaryMatch || secondaryMatch
     if (!match) continue
 
@@ -394,24 +420,30 @@ export function extractStatLeaders(
       if (box) {
         const parts: string[] = []
         if (spec.category === 'PTS') {
-          if (box.fg && box.fg !== '0-0') parts.push(`${box.fg} FG`)
-          if (box.threePt && box.threePt !== '0-0') parts.push(`${box.threePt} 3PT`)
-          parts.push(`${box.reb} REB`, `${box.ast} AST`)
+          if (box.fg !== null && box.fg !== '0-0') parts.push(`${box.fg} FG`)
+          if (box.threePt !== null && box.threePt !== '0-0') parts.push(`${box.threePt} 3PT`)
+          if (box.reb !== null) parts.push(`${box.reb} REB`)
+          if (box.ast !== null) parts.push(`${box.ast} AST`)
         } else if (spec.category === 'REB') {
-          parts.push(`${box.pts} PTS`, `${box.ast} AST`)
-          if (box.fg && box.fg !== '0-0') parts.push(`${box.fg} FG`)
-          if (box.blk > 0) parts.push(`${box.blk} BLK`)
+          if (box.pts !== null) parts.push(`${box.pts} PTS`)
+          if (box.ast !== null) parts.push(`${box.ast} AST`)
+          if (box.fg !== null && box.fg !== '0-0') parts.push(`${box.fg} FG`)
+          if (box.blk !== null && box.blk > 0) parts.push(`${box.blk} BLK`)
         } else {
-          parts.push(`${box.pts} PTS`, `${box.reb} REB`)
-          if (box.fg && box.fg !== '0-0') parts.push(`${box.fg} FG`)
-          if (box.stl > 0) parts.push(`${box.stl} STL`)
+          if (box.pts !== null) parts.push(`${box.pts} PTS`)
+          if (box.reb !== null) parts.push(`${box.reb} REB`)
+          if (box.fg !== null && box.fg !== '0-0') parts.push(`${box.fg} FG`)
+          if (box.stl !== null && box.stl > 0) parts.push(`${box.stl} STL`)
         }
-        if (box.plusMinus && parts.length < 4) parts.push(`${box.plusMinus} +/-`)
+        if (box.plusMinus !== null && parts.length < 4) parts.push(`${box.plusMinus} +/-`)
         subline = parts.join(' • ')
-      } else if (secEntry?.summary) {
-        subline = secEntry.summary
-      } else if (position) {
-        subline = `Pos: ${position}`
+      }
+      if (!subline) {
+        if (secEntry?.summary) {
+          subline = secEntry.summary
+        } else if (position) {
+          subline = `Pos: ${position}`
+        }
       }
     }
 

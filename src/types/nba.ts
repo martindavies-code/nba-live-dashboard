@@ -195,17 +195,17 @@ export interface NBAPlayerBoxLine {
   position?: string
   headshot?: string
   starter?: boolean
-  min: string
-  pts: number
-  reb: number
-  ast: number
-  fg: string
-  threePt: string
-  ft: string
-  stl: number
-  blk: number
-  tov: number
-  plusMinus: string
+  min: string | null
+  pts: number | null
+  reb: number | null
+  ast: number | null
+  fg: string | null
+  threePt: string | null
+  ft: string | null
+  stl: number | null
+  blk: number | null
+  tov: number | null
+  plusMinus: string | null
 }
 
 export interface NBAInjuryItem {

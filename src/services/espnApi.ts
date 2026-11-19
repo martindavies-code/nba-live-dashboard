@@ -87,12 +87,15 @@ interface InFlightSummaryEntry {
   promise: Promise<NBAGameSummary | null>
   controller: AbortController
   subscribers: Set<symbol>
+  generation: number
 }
 
 const SUMMARY_CACHE = new Map<string, SummaryCacheEntry>()
 const MAX_SUMMARY_CACHE_ENTRIES = 20
 const IN_FLIGHT_SUMMARY_REQUESTS = new Map<string, InFlightSummaryEntry>()
+const SUMMARY_LATEST_KEY_GEN = new Map<string, number>()
 let summaryCacheEpoch = 0
+let summaryRequestSeq = 0
 
 /**
  * Validates and sanitizes date parameter into strictly valid YYYYMMDD format.
@@ -146,12 +149,13 @@ export function clearScoreboardCache(): void {
 }
 
 /**
- * Clears the game summary cache and invalidates in-flight cache epochs.
+ * Clears the game summary cache and invalidates in-flight cache epochs and per-key ownership.
  */
 export function clearSummaryCache(): void {
   summaryCacheEpoch++
   SUMMARY_CACHE.clear()
   IN_FLIGHT_SUMMARY_REQUESTS.clear()
+  SUMMARY_LATEST_KEY_GEN.clear()
 }
 
 const MISSING_HEADSHOT_SENTINEL = 'https://invalid.local/__missing__'
@@ -674,10 +678,43 @@ function parseBoxPlayers(
     pm: labels.indexOf('+/-'),
   }
 
-  const getCell = (row: unknown[], colIdx: number, fallback = '0'): string => {
-    if (colIdx < 0 || colIdx >= row.length) return fallback
+  const getRawCell = (row: unknown[], colIdx: number): string | null => {
+    if (colIdx < 0 || colIdx >= row.length) return null
     const val = row[colIdx]
-    return val !== undefined && val !== null && String(val).trim() ? String(val).trim() : fallback
+    if (val === undefined || val === null) return null
+    const str = String(val).trim()
+    if (!str || /^(?:--|-|—|n\/a|na|null|undefined|dnp)$/i.test(str)) return null
+    return str
+  }
+
+  const parseStrictIntCell = (row: unknown[], colIdx: number): number | null => {
+    const str = getRawCell(row, colIdx)
+    if (str === null || !/^\d+$/.test(str)) return null
+    const n = Number(str)
+    return Number.isSafeInteger(n) ? n : null
+  }
+
+  const parseMadeAttemptedCell = (row: unknown[], colIdx: number): string | null => {
+    const str = getRawCell(row, colIdx)
+    if (str === null) return null
+    const m = str.match(/^(\d+)-(\d+)$/)
+    if (!m) return null
+    const made = Number(m[1])
+    const att = Number(m[2])
+    if (!Number.isSafeInteger(made) || !Number.isSafeInteger(att) || made > att) return null
+    return `${made}-${att}`
+  }
+
+  const parsePlusMinusCell = (row: unknown[], colIdx: number): string | null => {
+    const str = getRawCell(row, colIdx)
+    if (str === null || !/^[+-]?\d+$/.test(str)) return null
+    return str
+  }
+
+  const parseMinutesCell = (row: unknown[], colIdx: number): string | null => {
+    const str = getRawCell(row, colIdx)
+    if (str === null || !/^\d+(?::\d{2})?$/.test(str)) return null
+    return str
   }
 
   const players: NBAPlayerBoxLine[] = []
@@ -696,12 +733,12 @@ function parseBoxPlayers(
       athleteHeadshots.set(id, headshot)
     }
 
-    const pts = parseInt(getCell(item.stats, idx.pts, '0'), 10) || 0
-    const reb = parseInt(getCell(item.stats, idx.reb, '0'), 10) || 0
-    const ast = parseInt(getCell(item.stats, idx.ast, '0'), 10) || 0
-    const stl = parseInt(getCell(item.stats, idx.stl, '0'), 10) || 0
-    const blk = parseInt(getCell(item.stats, idx.blk, '0'), 10) || 0
-    const tov = parseInt(getCell(item.stats, idx.to, '0'), 10) || 0
+    const pts = parseStrictIntCell(item.stats, idx.pts)
+    const reb = parseStrictIntCell(item.stats, idx.reb)
+    const ast = parseStrictIntCell(item.stats, idx.ast)
+    const stl = parseStrictIntCell(item.stats, idx.stl)
+    const blk = parseStrictIntCell(item.stats, idx.blk)
+    const tov = parseStrictIntCell(item.stats, idx.to)
 
     players.push({
       id: id || String(ath.displayName || 'player'),
@@ -711,26 +748,60 @@ function parseBoxPlayers(
       position: typeof ath.position?.abbreviation === 'string' ? ath.position.abbreviation : undefined,
       ...(headshot ? { headshot } : {}),
       starter: Boolean(item.starter),
-      min: getCell(item.stats, idx.min, '0'),
+      min: parseMinutesCell(item.stats, idx.min),
       pts,
       reb,
       ast,
-      fg: getCell(item.stats, idx.fg, '0-0'),
-      threePt: getCell(item.stats, idx.threePt, '0-0'),
-      ft: getCell(item.stats, idx.ft, '0-0'),
+      fg: parseMadeAttemptedCell(item.stats, idx.fg),
+      threePt: parseMadeAttemptedCell(item.stats, idx.threePt),
+      ft: parseMadeAttemptedCell(item.stats, idx.ft),
       stl,
       blk,
       tov,
-      plusMinus: getCell(item.stats, idx.pm, '0'),
+      plusMinus: parsePlusMinusCell(item.stats, idx.pm),
     })
   }
 
-  players.sort((a, b) => b.pts - a.pts || b.reb + b.ast - (a.reb + a.ast))
+  // Sort policy: players with known numeric PTS rank ahead of unknown (null) PTS,
+  // so an unknown PTS cell is never treated as a factual 0 when compared to a genuine 0-point game.
+  players.sort((a, b) => {
+    const aHasPts = a.pts !== null
+    const bHasPts = b.pts !== null
+    if (aHasPts !== bHasPts) return aHasPts ? -1 : 1
+    if (aHasPts && bHasPts && a.pts !== b.pts) return (b.pts as number) - (a.pts as number)
+
+    const aHasSec = a.reb !== null || a.ast !== null
+    const bHasSec = b.reb !== null || b.ast !== null
+    if (aHasSec !== bHasSec) return aHasSec ? -1 : 1
+    if (aHasSec && bHasSec) {
+      return ((b.reb ?? 0) + (b.ast ?? 0)) - ((a.reb ?? 0) + (a.ast ?? 0))
+    }
+    return 0
+  })
   return players.slice(0, 8)
+}
+
+function extractExplicitId(val: unknown): string | undefined {
+  if (typeof val === 'string') {
+    const trimmed = val.trim()
+    return trimmed || undefined
+  }
+  if (typeof val === 'number' && Number.isFinite(val)) {
+    return String(val)
+  }
+  return undefined
+}
+
+function parseExplicitGameState(val: unknown): 'pre' | 'in' | 'post' | undefined {
+  if (typeof val !== 'string') return undefined
+  const norm = val.trim().toLowerCase()
+  return norm === 'pre' || norm === 'in' || norm === 'post' ? norm : undefined
 }
 
 /**
  * Parses ESPN's game summary endpoint payload into a typed NBAGameSummary object.
+ * Validates explicit response event IDs, competition IDs, game states, team identities,
+ * and rejects empty/contentless or conflicting payloads instead of relabeling them.
  */
 export function parseSummaryPayload(
   eventId: string,
@@ -791,7 +862,15 @@ export function parseSummaryPayload(
     }
     plays?: unknown[]
     header?: {
+      id?: unknown
       competitions?: Array<{
+        id?: unknown
+        status?: {
+          type?: {
+            state?: unknown
+            completed?: unknown
+          }
+        }
         competitors?: Array<{
           id?: unknown
           homeAway?: unknown
@@ -801,8 +880,23 @@ export function parseSummaryPayload(
     }
   }
 
+  // Validate explicit response event ID and competition ID against each other and requested eventId
+  const requestedEventId = extractExplicitId(eventId)
+  const headerEventId = extractExplicitId(data.header?.id)
+  const headerCompetition = data.header?.competitions?.[0]
+  const compEventId = extractExplicitId(headerCompetition?.id)
+  const headerState = parseExplicitGameState(headerCompetition?.status?.type?.state)
+
+  if (headerEventId && compEventId && headerEventId !== compEventId) return null
+  if (headerEventId && requestedEventId && headerEventId !== requestedEventId) return null
+  if (compEventId && requestedEventId && compEventId !== requestedEventId) return null
+
+  // Reject explicit response state mismatches (e.g. lagging pre payload for in/post consumer, or in payload for post consumer)
+  if (resolvedState && headerState && headerState !== resolvedState) return null
+  const effectiveGameState = headerState ?? resolvedState
+
   // Resolve home & away team IDs from header or context
-  const headerComps = data.header?.competitions?.[0]?.competitors || []
+  const headerComps = headerCompetition?.competitors || []
   const resolvedHomeComp = headerComps.find((c) => c.homeAway === 'home')
   const resolvedAwayComp = headerComps.find((c) => c.homeAway === 'away')
 
@@ -937,6 +1031,21 @@ export function parseSummaryPayload(
   const awayTeam = buildTeamSummary('away')
   const homeTeam = buildTeamSummary('home')
 
+  // If context specifies expected teams and the payload carries team sections yet NONE matched, reject mismatched payload
+  const hasContextTeamConstraint = Boolean(
+    context.homeTeamId || context.awayTeamId || context.homeAbbr || context.awayAbbr
+  )
+  const payloadHasTeamSections = Boolean(
+    (Array.isArray(data.boxscore?.teams) && data.boxscore.teams.length > 0) ||
+      (Array.isArray(data.boxscore?.players) && data.boxscore.players.length > 0) ||
+      (Array.isArray(data.leaders) && data.leaders.length > 0) ||
+      (Array.isArray(data.injuries) && data.injuries.length > 0) ||
+      (Array.isArray(data.lastFiveGames) && data.lastFiveGames.length > 0)
+  )
+  if (hasContextTeamConstraint && payloadHasTeamSections && !awayTeam && !homeTeam) {
+    return null
+  }
+
   // Cross-attribute opponent's Points Conceded Off Turnovers to Points Scored Off Turnovers when both teams are present
   if (awayTeam && homeTeam) {
     if (awayTeam.stats.pointsConcededOffTurnovers && !homeTeam.stats.pointsScoredOffTurnovers) {
@@ -984,9 +1093,23 @@ export function parseSummaryPayload(
         .filter(Boolean)
     : undefined
 
+  // Conservative incomplete/empty payload policy: reject empty or contentless successful JSON responses
+  const hasMeaningfulContent = Boolean(
+    awayTeam ||
+      homeTeam ||
+      shots.length > 0 ||
+      predictor ||
+      seasonSeries ||
+      attendance !== undefined ||
+      (officials && officials.length > 0)
+  )
+  if (!hasMeaningfulContent) {
+    return null
+  }
+
   return {
-    eventId,
-    ...(resolvedState ? { gameState: resolvedState } : {}),
+    eventId: headerEventId ?? compEventId ?? eventId,
+    ...(effectiveGameState ? { gameState: effectiveGameState } : {}),
     provenance: 'live',
     isStale: false,
     fetchedAt: Date.now(),
@@ -1003,7 +1126,7 @@ export function parseSummaryPayload(
 /**
  * Fetches rich game summary intelligence (scouting splits, injuries, last-5, full box score, and shots)
  * for a spotlighted NBA event with state+team-scoped TTL caching, subscriber-isolated in-flight deduplication,
- * and safe same-state fallback.
+ * per-key generation ownership, and safe same-state fallback.
  */
 export function fetchNBAGameSummary(
   eventId: string,
@@ -1062,6 +1185,26 @@ export function fetchNBAGameSummary(
     const sharedController = new AbortController()
     const subscribers = new Set<symbol>()
     const requestEpoch = summaryCacheEpoch
+    const requestGen = ++summaryRequestSeq
+    SUMMARY_LATEST_KEY_GEN.set(cacheKey, requestGen)
+
+    const isCacheWriteAuthorized = (): boolean =>
+      !sharedController.signal.aborted &&
+      requestEpoch === summaryCacheEpoch &&
+      SUMMARY_LATEST_KEY_GEN.get(cacheKey) === requestGen
+
+    const makeStaleFallback = (): NBAGameSummary | null => {
+      if (sharedController.signal.aborted) return null
+      if (cached && cached.gameState === normState) {
+        return {
+          ...cached.data,
+          gameState: normState,
+          provenance: 'stale-cache',
+          isStale: true,
+        }
+      }
+      return null
+    }
 
     const executeFetch = async (): Promise<NBAGameSummary | null> => {
       const url = new URL(ESPN_NBA_SUMMARY_URL)
@@ -1073,6 +1216,11 @@ export function fetchNBAGameSummary(
             signal: fetchSignal,
             headers: { Accept: 'application/json' },
           })
+          if (fetchSignal?.aborted) {
+            const abortErr = new Error('The operation was aborted.')
+            abortErr.name = 'AbortError'
+            throw abortErr
+          }
           if (!response.ok) {
             if (response.status >= 500 || response.status === 429) {
               throw new TransientNetworkError(`ESPN Summary API returned ${response.status}`, response.status)
@@ -1088,11 +1236,18 @@ export function fetchNBAGameSummary(
           sharedController.signal
         )
 
-        const parsed = parseSummaryPayload(cleanId, rawData, context, normState)
-        if (!parsed) return null
+        // Never parse, publish, or cache a response whose shared request was already aborted
+        if (sharedController.signal.aborted) {
+          return null
+        }
 
-        // Do not populate cache if clearSummaryCache() was called while this request was in flight
-        if (requestEpoch === summaryCacheEpoch) {
+        const parsed = parseSummaryPayload(cleanId, rawData, context, normState)
+        if (!parsed) {
+          return makeStaleFallback()
+        }
+
+        // Write to cache ONLY if still active, same cache epoch, and still latest owner for this cacheKey
+        if (isCacheWriteAuthorized()) {
           const ttlMs = getSummaryCacheTtlMs(normState)
           if (SUMMARY_CACHE.size >= MAX_SUMMARY_CACHE_ENTRIES) {
             const oldestKey = SUMMARY_CACHE.keys().next().value
@@ -1107,17 +1262,9 @@ export function fetchNBAGameSummary(
 
         return parsed
       } catch (err: unknown) {
-        if (isAbortError(err)) throw err
+        if (isAbortError(err) || sharedController.signal.aborted) throw err
         logger.warn('Game summary fetch unavailable; checking same-state cache fallback', { eventId: cleanId, gameState: normState }, err)
-        if (cached && cached.gameState === normState) {
-          return {
-            ...cached.data,
-            gameState: normState,
-            provenance: 'stale-cache',
-            isStale: true,
-          }
-        }
-        return null
+        return makeStaleFallback()
       }
     }
 
@@ -1127,11 +1274,14 @@ export function fetchNBAGameSummary(
         IN_FLIGHT_SUMMARY_REQUESTS.delete(cacheKey)
       }
     })
+    // Guard against unhandledRejection if all subscribers detach/abort before an async rejection settles
+    promise.catch(() => {})
 
     inFlight = {
       promise,
       controller: sharedController,
       subscribers,
+      generation: requestGen,
     }
     IN_FLIGHT_SUMMARY_REQUESTS.set(cacheKey, inFlight)
   }
@@ -1155,6 +1305,10 @@ export function fetchNBAGameSummary(
         const current = IN_FLIGHT_SUMMARY_REQUESTS.get(cacheKey)
         if (current === activeEntry) {
           IN_FLIGHT_SUMMARY_REQUESTS.delete(cacheKey)
+        }
+        // Invalidate this aborted request's cache-write authority immediately
+        if (SUMMARY_LATEST_KEY_GEN.get(cacheKey) === activeEntry.generation) {
+          SUMMARY_LATEST_KEY_GEN.set(cacheKey, ++summaryRequestSeq)
         }
         activeEntry.controller.abort()
       }

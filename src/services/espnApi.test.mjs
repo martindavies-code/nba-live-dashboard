@@ -788,4 +788,439 @@ test('P1 Regression: Failed transition refresh does not return cached data from 
   }
 })
 
+test('P1 Follow-Up Regression: parseSummaryPayload and fetchNBAGameSummary reject mismatched event IDs, top-level vs competition ID conflicts, wrong game states, and empty JSON', async () => {
+  clearSummaryCache()
+  const originalFetch = globalThis.fetch
+
+  const memCleContext = {
+    awayTeamId: '29',
+    homeTeamId: '5',
+    awayAbbr: 'MEM',
+    homeAbbr: 'CLE',
+  }
+
+  const makeMemClePrePayload = (headerId = '401910007', compId = '401910007', state = 'pre') => ({
+    header: {
+      id: headerId,
+      competitions: [
+        {
+          id: compId,
+          status: {
+            type: { state, completed: state === 'post' },
+          },
+          competitors: [
+            { homeAway: 'away', team: { id: '29', abbreviation: 'MEM' } },
+            { homeAway: 'home', team: { id: '5', abbreviation: 'CLE' } },
+          ],
+        },
+      ],
+    },
+    leaders: [
+      {
+        team: { id: '29', abbreviation: 'MEM' },
+        leaders: [
+          {
+            name: 'pointsPerGame',
+            displayName: 'Points Per Game',
+            leaders: [{ displayValue: '25.4', value: 25.4, athlete: { id: '4278', displayName: 'Ty Jerome', shortName: 'T. Jerome', fullName: 'Ty Jerome' } }],
+          },
+        ],
+      },
+    ],
+    boxscore: {
+      teams: [
+        { homeAway: 'away', team: { id: '29', abbreviation: 'MEM' }, statistics: [{ name: 'avgPointsAgainst', displayValue: '115.2' }] },
+        { homeAway: 'home', team: { id: '5', abbreviation: 'CLE' }, statistics: [{ name: 'avgPointsAgainst', displayValue: '108.9' }] },
+      ],
+    },
+  })
+
+  // 1. Wrong event ID with matching teams (401910007 returned when requesting 401999999)
+  assert.equal(
+    parseSummaryPayload('401999999', makeMemClePrePayload('401910007', '401910007', 'pre'), memCleContext, 'pre'),
+    null,
+    'Must reject summary whose header.id / competition.id does not match requested eventId'
+  )
+
+  // 2. Explicit OTHER_EVENT ID
+  assert.equal(
+    parseSummaryPayload('401910007', makeMemClePrePayload('OTHER_EVENT', 'OTHER_EVENT', 'post'), memCleContext, 'post'),
+    null,
+    'Must reject summary with explicit OTHER_EVENT header ID'
+  )
+
+  // 3. Top-level header.id vs header.competitions[0].id conflict
+  assert.equal(
+    parseSummaryPayload('401910007', makeMemClePrePayload('401910007', '401999888', 'pre'), memCleContext, 'pre'),
+    null,
+    'Must reject payload with conflicting header.id and header.competitions[0].id'
+  )
+
+  // 4. Pre payload delivered to in or post consumer must be rejected (never relabeled as live/post)
+  assert.equal(
+    parseSummaryPayload('401910007', makeMemClePrePayload('401910007', '401910007', 'pre'), memCleContext, 'in'),
+    null,
+    'Explicit pre summary must not be accepted for in-game consumer'
+  )
+  assert.equal(
+    parseSummaryPayload('401910007', makeMemClePrePayload('401910007', '401910007', 'pre'), memCleContext, 'post'),
+    null,
+    'Explicit pre summary must not be accepted for post-game consumer'
+  )
+
+  // 5. In-game payload delivered to final (post) consumer must be rejected
+  assert.equal(
+    parseSummaryPayload('401910007', makeMemClePrePayload('401910007', '401910007', 'in'), memCleContext, 'post'),
+    null,
+    'Explicit in-game summary must not be accepted as final post-game summary'
+  )
+
+  // 6. Correct matching post response is accepted with live provenance
+  const validPost = parseSummaryPayload('401910007', makeMemClePrePayload('401910007', '401910007', 'post'), memCleContext, 'post')
+  assert.ok(validPost, 'Matching event ID and post state must be accepted')
+  assert.equal(validPost.eventId, '401910007')
+  assert.equal(validPost.gameState, 'post')
+  assert.equal(validPost.provenance, 'live')
+  assert.equal(validPost.isStale, false)
+
+  // 7. Conservative missing-metadata & empty JSON policy:
+  // Empty {} successful JSON must be rejected (never live/fresh provenance)
+  assert.equal(
+    parseSummaryPayload('401910007', {}, memCleContext, 'post'),
+    null,
+    'Empty {} JSON payload must be rejected instead of returning false live/fresh summary'
+  )
+  // Headerless payload whose teams do not match requested context must be rejected even if seasonseries is present
+  assert.equal(
+    parseSummaryPayload(
+      '401910007',
+      {
+        seasonseries: [{ summary: 'OKC leads 2-0' }],
+        boxscore: {
+          teams: [
+            { homeAway: 'away', team: { id: '25', abbreviation: 'OKC' }, statistics: [{ name: 'fieldGoalPct', displayValue: '49.1' }] },
+          ],
+        },
+      },
+      memCleContext,
+      'post'
+    ),
+    null,
+    'Headerless payload with conflicting teams must be rejected'
+  )
+  // Headerless payload WITH valid matching team stats is accepted conservatively
+  const partialNoHeader = parseSummaryPayload(
+    '401910007',
+    {
+      boxscore: {
+        teams: [
+          { homeAway: 'away', team: { id: '29', abbreviation: 'MEM' }, statistics: [{ name: 'fieldGoalPct', displayValue: '47.5' }] },
+        ],
+      },
+    },
+    memCleContext,
+    'post'
+  )
+  assert.ok(partialNoHeader, 'Payload omitting optional header metadata with valid matching team content is conservatively accepted')
+
+  // 8. End-to-end fetchNBAGameSummary: lagging pre response for post consumer returns null (no false live provenance, no cache write)
+  let fetchCalls = 0
+  try {
+    globalThis.fetch = async () => {
+      fetchCalls++
+      return {
+        ok: true,
+        status: 200,
+        json: async () => makeMemClePrePayload('401910007', '401910007', 'pre'),
+      }
+    }
+    const rejectedPost = await fetchNBAGameSummary('401910007', 'post', undefined, memCleContext)
+    assert.equal(rejectedPost, null, 'Lagging pre summary returned for post request must resolve null, not live/post')
+
+    // Subsequent call must retry network (rejected payload must not have been cached)
+    const secondTry = await fetchNBAGameSummary('401910007', 'post', undefined, memCleContext)
+    assert.equal(secondTry, null)
+    assert.equal(fetchCalls, 2, 'Rejected mismatched-state response must not be cached')
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('P2 Follow-Up Regression: Late completion of an aborted obsolete request never overwrites a newer cache entry (and produces zero unhandled rejections)', async () => {
+  clearSummaryCache()
+  const originalFetch = globalThis.fetch
+  const unhandled = []
+  const onUnhandled = (reason) => unhandled.push(reason)
+  process.on('unhandledRejection', onUnhandled)
+
+  try {
+    // Scenario 1: Request A aborted -> Request B resolves 'fresh' -> Request A's deferred fetch resolves 'obsolete'
+    const deferredFetches = []
+    globalThis.fetch = () =>
+      new Promise((resolve) => {
+        deferredFetches.push(resolve)
+      })
+
+    const controllerA = new AbortController()
+    const promiseA = fetchNBAGameSummary('late-aborted', 'post', controllerA.signal)
+    assert.equal(deferredFetches.length, 1)
+
+    controllerA.abort()
+    await assert.rejects(promiseA, (err) => err.name === 'AbortError')
+
+    const promiseB = fetchNBAGameSummary('late-aborted', 'post')
+    assert.equal(deferredFetches.length, 2)
+
+    // Resolve B with 'fresh'
+    deferredFetches[1]({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        seasonseries: [{ summary: 'FRESH_RESULT_B' }],
+        boxscore: { teams: [] },
+      }),
+    })
+    const resB = await promiseB
+    assert.equal(resB?.seasonSeries, 'FRESH_RESULT_B')
+
+    // Now resolve obsolete aborted A with 'obsolete'
+    deferredFetches[0]({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        seasonseries: [{ summary: 'OBSOLETE_RESULT_A' }],
+        boxscore: { teams: [] },
+      }),
+    })
+    await new Promise((r) => setTimeout(r, 30))
+
+    // Reading same event/state must return cached FRESH_RESULT_B, NOT OBSOLETE_RESULT_A
+    const cachedAfter = await fetchNBAGameSummary('late-aborted', 'post')
+    assert.equal(deferredFetches.length, 2, 'Should read directly from cache')
+    assert.equal(cachedAfter?.seasonSeries, 'FRESH_RESULT_B', 'Aborted obsolete Request A must NOT overwrite Request B cache entry')
+
+    // Scenario 2: Aborted Request A's deferred response.json() body resolves AFTER Request B writes 'fresh'
+    clearSummaryCache()
+    let resolveBodyA
+    let callIdx = 0
+    globalThis.fetch = async () => {
+      callIdx++
+      if (callIdx === 1) {
+        return {
+          ok: true,
+          status: 200,
+          json: () =>
+            new Promise((resolve) => {
+              resolveBodyA = () => resolve({ seasonseries: [{ summary: 'OBSOLETE_BODY_A' }], boxscore: { teams: [] } })
+            }),
+        }
+      }
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ seasonseries: [{ summary: 'FRESH_BODY_B' }], boxscore: { teams: [] } }),
+      }
+    }
+
+    const ctrlBodyA = new AbortController()
+    const pBodyA = fetchNBAGameSummary('late-aborted-body', 'post', ctrlBodyA.signal)
+    await new Promise((r) => setTimeout(r, 10))
+    ctrlBodyA.abort()
+    await assert.rejects(pBodyA, (err) => err.name === 'AbortError')
+
+    const resBodyB = await fetchNBAGameSummary('late-aborted-body', 'post')
+    assert.equal(resBodyB?.seasonSeries, 'FRESH_BODY_B')
+
+    resolveBodyA()
+    await new Promise((r) => setTimeout(r, 30))
+
+    const cachedBodyAfter = await fetchNBAGameSummary('late-aborted-body', 'post')
+    assert.equal(cachedBodyAfter?.seasonSeries, 'FRESH_BODY_B', 'Late aborted response.json() must NOT overwrite newer cache entry')
+
+    // Scenario 3: Aborted Request A resolves BEFORE Request B finishes -> must not populate cache or break B
+    clearSummaryCache()
+    const deferred3 = []
+    globalThis.fetch = () =>
+      new Promise((resolve) => {
+        deferred3.push(resolve)
+      })
+    const ctrl3 = new AbortController()
+    const p3A = fetchNBAGameSummary('late-aborted-order', 'post', ctrl3.signal)
+    ctrl3.abort()
+    await assert.rejects(p3A, (err) => err.name === 'AbortError')
+
+    const p3B = fetchNBAGameSummary('late-aborted-order', 'post')
+    deferred3[0]({
+      ok: true,
+      status: 200,
+      json: async () => ({ seasonseries: [{ summary: 'OBSOLETE_BEFORE_B' }], boxscore: { teams: [] } }),
+    })
+    await new Promise((r) => setTimeout(r, 20))
+    deferred3[1]({
+      ok: true,
+      status: 200,
+      json: async () => ({ seasonseries: [{ summary: 'FRESH_AFTER_A' }], boxscore: { teams: [] } }),
+    })
+    const res3B = await p3B
+    assert.equal(res3B?.seasonSeries, 'FRESH_AFTER_A')
+    const cached3 = await fetchNBAGameSummary('late-aborted-order', 'post')
+    assert.equal(cached3?.seasonSeries, 'FRESH_AFTER_A')
+
+    // Scenario 4: Aborted sole request with no Request B must NOT populate cache when it resolves late
+    clearSummaryCache()
+    let resolveSoleA
+    let soleCalls = 0
+    globalThis.fetch = () => {
+      soleCalls++
+      const n = soleCalls
+      if (n === 1) {
+        return new Promise((resolve) => {
+          resolveSoleA = () =>
+            resolve({
+              ok: true,
+              status: 200,
+              json: async () => ({ seasonseries: [{ summary: 'OBSOLETE_SOLE' }], boxscore: { teams: [] } }),
+            })
+        })
+      }
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        json: async () => ({ seasonseries: [{ summary: 'FRESH_SECOND_CALL' }], boxscore: { teams: [] } }),
+      })
+    }
+    const ctrlSole = new AbortController()
+    const pSole = fetchNBAGameSummary('sole-aborted', 'post', ctrlSole.signal)
+    ctrlSole.abort()
+    await assert.rejects(pSole, (err) => err.name === 'AbortError')
+    resolveSoleA()
+    await new Promise((r) => setTimeout(r, 30))
+
+    const resSoleNext = await fetchNBAGameSummary('sole-aborted', 'post')
+    assert.equal(soleCalls, 2, 'Aborted sole request must not populate cache')
+    assert.equal(resSoleNext?.seasonSeries, 'FRESH_SECOND_CALL')
+
+    await new Promise((r) => setTimeout(r, 20))
+    assert.equal(unhandled.length, 0, `Expected zero unhandled rejections, got ${unhandled.length}`)
+  } finally {
+    process.off('unhandledRejection', onUnhandled)
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('P2 Follow-Up Regression: parseBoxPlayers preserves null for missing/placeholder/malformed cells, preserves explicit 0/0-0/negative +/-, and sorts unknown PTS after known PTS', () => {
+  const payload = {
+    header: {
+      id: '401910999',
+      competitions: [
+        {
+          id: '401910999',
+          status: { type: { state: 'post', completed: true } },
+          competitors: [
+            { homeAway: 'away', team: { id: '7', abbreviation: 'DEN' } },
+            { homeAway: 'home', team: { id: '16', abbreviation: 'MIN' } },
+          ],
+        },
+      ],
+    },
+    boxscore: {
+      players: [
+        {
+          team: { id: '7', abbreviation: 'DEN' },
+          statistics: [
+            {
+              // Notice '3PT' and 'FT' columns are intentionally omitted from labels
+              labels: ['MIN', 'FG', 'REB', 'AST', 'STL', 'BLK', 'TO', '+/-', 'PTS'],
+              athletes: [
+                {
+                  // Unknown PTS ('--'), malformed REB ('12bad'), blank FG, placeholder +/-
+                  didNotPlay: false,
+                  starter: true,
+                  athlete: { id: 'p-unknown', displayName: 'Unknown Scorer', shortName: 'U. Scorer' },
+                  stats: ['--', '', '12bad', '5', 'N/A', null, '2', '--', '--'],
+                },
+                {
+                  // Explicit genuine zero PTS, explicit '0-0' FG, real negative +/- '-4'
+                  didNotPlay: false,
+                  starter: false,
+                  athlete: { id: 'p-zero', displayName: 'Zero Scorer', shortName: 'Z. Scorer' },
+                  stats: ['11', '0-0', '3', '0', '0', '0', '0', '-4', '0'],
+                },
+                {
+                  // Truncated stats row (only MIN, FG, REB present; AST..PTS missing)
+                  didNotPlay: false,
+                  starter: false,
+                  athlete: { id: 'p-trunc', displayName: 'Truncated Row', shortName: 'T. Row' },
+                  stats: ['18', '4-9', '7'],
+                },
+                {
+                  // Valid full row with 22 pts and malformed FG '9-2' (made > attempted)
+                  didNotPlay: false,
+                  starter: true,
+                  athlete: { id: 'p-star', displayName: 'Star Player', shortName: 'S. Player' },
+                  stats: ['35', '9-2', '8', '6', '1', '0', '2', '+10', '22'],
+                },
+                {
+                  // DNP row skipped
+                  didNotPlay: true,
+                  athlete: { id: 'p-dnp', displayName: 'Did Not Play', shortName: 'D. Play' },
+                  stats: [],
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    },
+  }
+
+  const parsed = parseSummaryPayload('401910999', payload, { awayTeamId: '7', homeTeamId: '16' }, 'post')
+  assert.ok(parsed)
+  const players = parsed.awayTeam?.topPlayers || []
+  assert.equal(players.length, 4, 'DNP player must be excluded while 4 active/partial rows remain')
+
+  // Sort policy: known numeric PTS (22, then 0) MUST sort ahead of unknown (null) PTS
+  assert.equal(players[0].id, 'p-star')
+  assert.equal(players[1].id, 'p-zero', 'Genuine 0-point player must rank ahead of unknown-PTS players')
+
+  // Check Star Player: valid 22 PTS, malformed FG '9-2' (made > att) -> null, omitted 3PT/FT -> null
+  assert.equal(players[0].pts, 22)
+  assert.equal(players[0].fg, null, 'Impossible FG made > attempted must parse as null')
+  assert.equal(players[0].threePt, null, 'Omitted 3PT column must parse as null, not 0-0')
+  assert.equal(players[0].ft, null, 'Omitted FT column must parse as null, not 0-0')
+  assert.equal(players[0].plusMinus, '+10')
+
+  // Check Zero Scorer: genuine 0, '0-0', and negative '-4' preserved
+  assert.equal(players[1].min, '11')
+  assert.equal(players[1].pts, 0)
+  assert.equal(players[1].reb, 3)
+  assert.equal(players[1].ast, 0)
+  assert.equal(players[1].fg, '0-0')
+  assert.equal(players[1].plusMinus, '-4')
+
+  // Check Unknown Scorer: '--', '', '12bad', 'N/A', null all become null (never 0 or 12)
+  const unknown = players.find((p) => p.id === 'p-unknown')
+  assert.ok(unknown)
+  assert.equal(unknown.min, null)
+  assert.equal(unknown.fg, null)
+  assert.equal(unknown.reb, null, 'Malformed numeric prefix 12bad must parse as null, not 12')
+  assert.equal(unknown.ast, 5)
+  assert.equal(unknown.stl, null)
+  assert.equal(unknown.blk, null)
+  assert.equal(unknown.tov, 2)
+  assert.equal(unknown.plusMinus, null)
+  assert.equal(unknown.pts, null)
+
+  // Check Truncated Row: missing trailing cells become null (not 0 or '0-0')
+  const trunc = players.find((p) => p.id === 'p-trunc')
+  assert.ok(trunc)
+  assert.equal(trunc.min, '18')
+  assert.equal(trunc.fg, '4-9')
+  assert.equal(trunc.reb, 7)
+  assert.equal(trunc.ast, null)
+  assert.equal(trunc.pts, null)
+  assert.equal(trunc.plusMinus, null)
+})
+
+
 

@@ -89,118 +89,220 @@ test('CourtMatchupIntel enforces 1-col mobile / 12-col desktop court grid and tr
   assert.match(intelCode, /truncate/)
 })
 
-async function withHeadlessBrowser(fn) {
+let loggedBrowserExecutable = false
+
+function isExecutableFile(filePath) {
+  try {
+    fs.accessSync(filePath, fs.constants.X_OK)
+    return true
+  } catch {
+    return false
+  }
+}
+
+function resolveBrowserExecutable(explicitOverride) {
+  const override =
+    explicitOverride ||
+    process.env.CHROME_PATH ||
+    process.env.CHROMIUM_PATH ||
+    process.env.BROWSER_BIN
+
+  if (override) {
+    if (!isExecutableFile(override)) {
+      throw new Error(
+        `Browser executable override is not executable or does not exist: "${override}". ` +
+          'Set CHROME_PATH, CHROMIUM_PATH, or BROWSER_BIN to a valid Chromium or Google Chrome binary.'
+      )
+    }
+    return override
+  }
+
+  const standardCandidates = [
+    '/usr/bin/chromium',
+    '/usr/bin/chromium-browser',
+    '/usr/bin/google-chrome',
+    '/usr/bin/google-chrome-stable',
+    '/snap/bin/chromium',
+    '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+  ]
+
+  for (const candidate of standardCandidates) {
+    if (isExecutableFile(candidate)) return candidate
+  }
+
+  const pathDirs = (process.env.PATH || '').split(path.delimiter).filter(Boolean)
+  const binNames = ['chromium', 'chromium-browser', 'google-chrome', 'google-chrome-stable']
+  for (const dir of pathDirs) {
+    for (const bin of binNames) {
+      const candidate = path.join(dir, bin)
+      if (isExecutableFile(candidate)) return candidate
+    }
+  }
+
+  throw new Error(
+    `No Chromium/Chrome executable found. Checked standard paths (${standardCandidates.join(', ')}) and PATH. ` +
+      'Install Chromium/Chrome or set CHROME_PATH, CHROMIUM_PATH, or BROWSER_BIN.'
+  )
+}
+
+async function withHeadlessBrowser(fn, options = {}) {
+  const executablePath = options.rawSpawnPath || resolveBrowserExecutable(options.browserPath)
+  if (!options.rawSpawnPath && !loggedBrowserExecutable) {
+    loggedBrowserExecutable = true
+    console.log(`[responsiveLayout.test] Browser executable: ${executablePath}`)
+  }
+
   const { createServer } = await import('vite')
   const { spawn } = await import('node:child_process')
   const os = await import('node:os')
 
-  const vite = await createServer({
-    root: path.resolve(__dirname, '../..'),
-    server: { port: 0, host: '127.0.0.1' },
-    logLevel: 'silent',
-    plugins: [
-      {
-        name: 'test-bridge',
-        resolveId(id) {
-          if (id === '/__test_bridge.ts') return id
-        },
-        load(id) {
-          if (id === '/__test_bridge.ts') {
-            return [
-              "import React from 'react'",
-              "import ReactDOMClient from 'react-dom/client'",
-              "import { HeroMatchup } from '/src/components/HeroMatchup.tsx'",
-              "import { clearSummaryCache } from '/src/services/espnApi.ts'",
-              'export { React, ReactDOMClient, HeroMatchup, clearSummaryCache }',
-            ].join('\n')
-          }
-        },
-      },
-    ],
-  })
-  await vite.listen()
-  const appPort = vite.httpServer.address().port
-  const baseUrl = `http://127.0.0.1:${appPort}`
-
-  const userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'nba-chrome-test-'))
-  const chromeProc = spawn(
-    '/usr/bin/chromium',
-    [
-      '--headless',
-      '--no-sandbox',
-      '--disable-gpu',
-      '--disable-dev-shm-usage',
-      '--remote-debugging-port=0',
-      `--user-data-dir=${userDataDir}`,
-      'about:blank',
-    ],
-    { stdio: ['ignore', 'ignore', 'pipe'] }
-  )
-
-  const wsBrowserUrl = await new Promise((resolve, reject) => {
-    const timeout = setTimeout(() => reject(new Error('Timed out waiting for Chromium DevTools endpoint')), 10000)
-    let stderrBuf = ''
-    chromeProc.stderr.on('data', (chunk) => {
-      stderrBuf += chunk.toString()
-      const match = stderrBuf.match(/DevTools listening on (ws:\/\/[^\s]+)/)
-      if (match) {
-        clearTimeout(timeout)
-        resolve(match[1])
-      }
-    })
-    chromeProc.on('exit', (code) => {
-      clearTimeout(timeout)
-      reject(new Error(`Chromium exited prematurely with code ${code}: ${stderrBuf}`))
-    })
-  })
-
-  const cdpPort = new URL(wsBrowserUrl).port
-  const listRes = await fetch(`http://127.0.0.1:${cdpPort}/json/list`)
-  const targets = await listRes.json()
-  const pageTarget = targets.find((t) => t.type === 'page')
-  assert.ok(pageTarget, 'Headless Chromium must expose a debuggable page target')
-
-  const ws = new WebSocket(pageTarget.webSocketDebuggerUrl)
-  await new Promise((r) => {
-    ws.onopen = r
-  })
-
-  let idCounter = 1
-  function sendCommand(method, params = {}) {
-    return new Promise((resolve, reject) => {
-      const id = idCounter++
-      const handler = (event) => {
-        const msg = JSON.parse(event.data)
-        if (msg.id === id) {
-          ws.removeEventListener('message', handler)
-          if (msg.error) reject(new Error(msg.error.message))
-          else resolve(msg.result)
-        }
-      }
-      ws.addEventListener('message', handler)
-      ws.send(JSON.stringify({ id, method, params }))
-    })
-  }
+  let vite = null
+  let userDataDir = null
+  let chromeProc = null
+  let ws = null
 
   try {
+    vite = await createServer({
+      root: path.resolve(__dirname, '../..'),
+      server: { port: 0, host: '127.0.0.1' },
+      logLevel: 'silent',
+      plugins: [
+        {
+          name: 'test-bridge',
+          resolveId(id) {
+            if (id === '/__test_bridge.ts') return id
+          },
+          load(id) {
+            if (id === '/__test_bridge.ts') {
+              return [
+                "import React from 'react'",
+                "import ReactDOMClient from 'react-dom/client'",
+                "import { HeroMatchup } from '/src/components/HeroMatchup.tsx'",
+                "import { clearSummaryCache } from '/src/services/espnApi.ts'",
+                'export { React, ReactDOMClient, HeroMatchup, clearSummaryCache }',
+              ].join('\n')
+            }
+          },
+        },
+      ],
+    })
+    await vite.listen()
+    const appPort = vite.httpServer.address().port
+    const baseUrl = `http://127.0.0.1:${appPort}`
+
+    userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'nba-chrome-test-'))
+    chromeProc = spawn(
+      executablePath,
+      [
+        '--headless',
+        '--no-sandbox',
+        '--disable-gpu',
+        '--disable-dev-shm-usage',
+        '--remote-debugging-port=0',
+        `--user-data-dir=${userDataDir}`,
+        'about:blank',
+      ],
+      { stdio: ['ignore', 'ignore', 'pipe'] }
+    )
+
+    const wsBrowserUrl = await new Promise((resolve, reject) => {
+      let settled = false
+      const settle = (fnToCall, val) => {
+        if (settled) return
+        settled = true
+        clearTimeout(timeout)
+        fnToCall(val)
+      }
+      const timeout = setTimeout(
+        () => settle(reject, new Error(`Timed out waiting for browser DevTools endpoint (${executablePath})`)),
+        10000
+      )
+      let stderrBuf = ''
+      chromeProc.on('error', (err) => {
+        settle(reject, new Error(`Failed to spawn browser executable "${executablePath}": ${err.message}`))
+      })
+      chromeProc.stderr.on('data', (chunk) => {
+        stderrBuf += chunk.toString()
+        const match = stderrBuf.match(/DevTools listening on (ws:\/\/[^\s]+)/)
+        if (match) {
+          settle(resolve, match[1])
+        }
+      })
+      chromeProc.on('exit', (code) => {
+        settle(reject, new Error(`Browser "${executablePath}" exited prematurely with code ${code}: ${stderrBuf}`))
+      })
+    })
+
+    const cdpPort = new URL(wsBrowserUrl).port
+    const listRes = await fetch(`http://127.0.0.1:${cdpPort}/json/list`)
+    const targets = await listRes.json()
+    const pageTarget = targets.find((t) => t.type === 'page')
+    assert.ok(pageTarget, 'Headless browser must expose a debuggable page target')
+
+    ws = new WebSocket(pageTarget.webSocketDebuggerUrl)
+    await new Promise((resolve, reject) => {
+      ws.onopen = resolve
+      ws.onerror = (err) => reject(new Error(`CDP WebSocket error: ${err?.message || 'connection failed'}`))
+    })
+
+    let idCounter = 1
+    function sendCommand(method, params = {}) {
+      return new Promise((resolve, reject) => {
+        const id = idCounter++
+        const handler = (event) => {
+          const msg = JSON.parse(event.data)
+          if (msg.id === id) {
+            ws.removeEventListener('message', handler)
+            if (msg.error) reject(new Error(msg.error.message))
+            else resolve(msg.result)
+          }
+        }
+        ws.addEventListener('message', handler)
+        ws.send(JSON.stringify({ id, method, params }))
+      })
+    }
+
     await sendCommand('Page.enable')
     await sendCommand('Runtime.enable')
-    await fn({ baseUrl, sendCommand })
+    await fn({ baseUrl, sendCommand, executablePath })
   } finally {
-    try {
-      ws.close()
-    } catch {
-      // ignore close errors
+    if (ws) {
+      try {
+        ws.close()
+      } catch {
+        // ignore close errors
+      }
     }
-    chromeProc.kill('SIGKILL')
-    await vite.close()
-    try {
-      fs.rmSync(userDataDir, { recursive: true, force: true })
-    } catch {
-      // ignore temp cleanup errors
+    if (chromeProc && chromeProc.exitCode === null && !chromeProc.killed) {
+      try {
+        chromeProc.kill('SIGKILL')
+      } catch {
+        // ignore kill errors
+      }
+    }
+    if (vite) {
+      await vite.close()
+    }
+    if (userDataDir) {
+      try {
+        fs.rmSync(userDataDir, { recursive: true, force: true })
+      } catch {
+        // ignore temp cleanup errors
+      }
     }
   }
 }
+
+test('Test runner portability: invalid browser executable rejects cleanly with actionable error and closes Vite without hanging', async () => {
+  await assert.rejects(
+    withHeadlessBrowser(async () => {}, { browserPath: '/nonexistent/path/to/chrome-binary' }),
+    /Browser executable override is not executable or does not exist/
+  )
+  await assert.rejects(
+    withHeadlessBrowser(async () => {}, { rawSpawnPath: '/nonexistent/path/to/chrome-binary' }),
+    /Failed to spawn browser executable/
+  )
+})
 
 test('P1 Regression: Mounted HeroMatchup handles StrictMode, rapid A/B/A switching, clears stale state on failed gameState transitions, and runs bounded TTL refresh', async () => {
   await withHeadlessBrowser(async ({ baseUrl, sendCommand }) => {
@@ -747,4 +849,218 @@ test('P2 Regression: Mobile 360px & 390px tab visibility, readable zone figures,
     assert.equal(zVal.selectedShotVisible, true, 'Clicking a shot marker must display the shot detail card')
   })
 })
+
+test('P1 Follow-Up Regression (Reproduction B): Mounted HeroMatchup in post mode rejects lagging pre-game MEM/CLE summary and never shows season averages as Final Game Leaders / GAME TOTAL', async () => {
+  await withHeadlessBrowser(async ({ baseUrl, sendCommand }) => {
+    await sendCommand('Page.navigate', { url: `${baseUrl}/` })
+    await new Promise((r) => setTimeout(r, 800))
+
+    const evalRes = await sendCommand('Runtime.evaluate', {
+      awaitPromise: true,
+      returnByValue: true,
+      expression: `(async () => {
+        const { React, ReactDOMClient, HeroMatchup, clearSummaryCache } = await import('/__test_bridge.ts')
+        clearSummaryCache()
+
+        const host = document.createElement('div')
+        document.body.innerHTML = ''
+        document.body.appendChild(host)
+        const root = ReactDOMClient.createRoot(host)
+
+        const postMemCleEvent = {
+          id: '401910007',
+          name: 'Memphis Grizzlies at Cleveland Cavaliers',
+          shortName: 'MEM @ CLE',
+          date: '2026-11-18T00:00Z',
+          status: {
+            clock: 0,
+            displayClock: '0:00',
+            period: 4,
+            type: { id: '3', name: 'STATUS_FINAL', state: 'post', completed: true, description: 'Final', detail: 'Final', shortDetail: 'Final' },
+          },
+          competitions: [
+            {
+              id: '401910007',
+              date: '2026-11-18T00:00Z',
+              status: {
+                clock: 0,
+                displayClock: '0:00',
+                period: 4,
+                type: { id: '3', name: 'STATUS_FINAL', state: 'post', completed: true, description: 'Final', detail: 'Final', shortDetail: 'Final' },
+              },
+              competitors: [
+                {
+                  id: '29',
+                  homeAway: 'away',
+                  score: '108',
+                  team: { id: '29', name: 'Grizzlies', displayName: 'Memphis Grizzlies', abbreviation: 'MEM', color: '5d76a9', logo: '' },
+                  leaders: [],
+                  statistics: [],
+                },
+                {
+                  id: '5',
+                  homeAway: 'home',
+                  score: '119',
+                  team: { id: '5', name: 'Cavaliers', displayName: 'Cleveland Cavaliers', abbreviation: 'CLE', color: '860038', logo: '' },
+                  leaders: [],
+                  statistics: [],
+                },
+              ],
+            },
+          ],
+        }
+
+        const preMemCleSummary = {
+          header: {
+            id: '401910007',
+            competitions: [
+              {
+                id: '401910007',
+                status: { type: { state: 'pre', completed: false } },
+                competitors: [
+                  { homeAway: 'away', team: { id: '29', abbreviation: 'MEM' } },
+                  { homeAway: 'home', team: { id: '5', abbreviation: 'CLE' } },
+                ],
+              },
+            ],
+          },
+          leaders: [
+            {
+              team: { id: '29', abbreviation: 'MEM' },
+              leaders: [
+                {
+                  name: 'pointsPerGame',
+                  displayName: 'Points Per Game',
+                  leaders: [{ displayValue: '25.4', value: 25.4, athlete: { id: '4278', fullName: 'Ty Jerome', displayName: 'Ty Jerome', shortName: 'T. Jerome' } }],
+                },
+                {
+                  name: 'reboundsPerGame',
+                  displayName: 'Rebounds Per Game',
+                  leaders: [{ displayValue: '9.5', value: 9.5, athlete: { id: '5001', fullName: 'Cameron Boozer', displayName: 'Cameron Boozer', shortName: 'C. Boozer' } }],
+                },
+                {
+                  name: 'assistsPerGame',
+                  displayName: 'Assists Per Game',
+                  leaders: [{ displayValue: '5.4', value: 5.4, athlete: { id: '5002', fullName: 'Cam Spencer', displayName: 'Cam Spencer', shortName: 'C. Spencer' } }],
+                },
+              ],
+            },
+            {
+              team: { id: '5', abbreviation: 'CLE' },
+              leaders: [
+                {
+                  name: 'pointsPerGame',
+                  displayName: 'Points Per Game',
+                  leaders: [{ displayValue: '24.8', value: 24.8, athlete: { id: '3908809', fullName: 'Donovan Mitchell', displayName: 'Donovan Mitchell', shortName: 'D. Mitchell' } }],
+                },
+              ],
+            },
+          ],
+          boxscore: {
+            teams: [
+              { homeAway: 'away', team: { id: '29', abbreviation: 'MEM' }, statistics: [{ name: 'avgPointsAgainst', displayValue: '115.2' }] },
+              { homeAway: 'home', team: { id: '5', abbreviation: 'CLE' }, statistics: [{ name: 'avgPointsAgainst', displayValue: '108.9' }] },
+            ],
+          },
+        }
+
+        let summaryRequests = 0
+        let serveRealPost = false
+        const origFetch = window.fetch
+        window.fetch = async (url) => {
+          const urlStr = String(url)
+          if (urlStr.includes('summary?event=401910007')) {
+            summaryRequests++
+            if (!serveRealPost) {
+              return { ok: true, status: 200, json: async () => preMemCleSummary }
+            }
+            return {
+              ok: true,
+              status: 200,
+              json: async () => ({
+                header: {
+                  id: '401910007',
+                  competitions: [
+                    {
+                      id: '401910007',
+                      status: { type: { state: 'post', completed: true } },
+                      competitors: [
+                        { homeAway: 'away', team: { id: '29', abbreviation: 'MEM' } },
+                        { homeAway: 'home', team: { id: '5', abbreviation: 'CLE' } },
+                      ],
+                    },
+                  ],
+                },
+                leaders: [
+                  {
+                    team: { id: '29', abbreviation: 'MEM' },
+                    leaders: [
+                      {
+                        name: 'points',
+                        displayName: 'Points',
+                        leaders: [{ displayValue: '31', value: 31, athlete: { id: '4279888', fullName: 'Ja Morant', displayName: 'Ja Morant', shortName: 'J. Morant' } }],
+                      },
+                    ],
+                  },
+                ],
+                boxscore: { teams: [] },
+              }),
+            }
+          }
+          return origFetch(url)
+        }
+
+        const waitFor = async (predicate, timeoutMs = 2000) => {
+          const start = Date.now()
+          while (Date.now() - start < timeoutMs) {
+            const v = predicate()
+            if (v) return v
+            await new Promise((r) => setTimeout(r, 25))
+          }
+          return predicate()
+        }
+
+        root.render(
+          React.createElement(HeroMatchup, {
+            event: postMemCleEvent,
+            summaryRefreshIntervalMs: 180,
+          })
+        )
+
+        await waitFor(() => summaryRequests >= 1, 1500)
+        await new Promise((r) => setTimeout(r, 120))
+        const textDuringPreLag = host.textContent || ''
+
+        // Now allow the bounded retry to fetch real post-game summary
+        serveRealPost = true
+        const gotRealPost = Boolean(await waitFor(() => (host.textContent || '').includes('Ja Morant'), 2000))
+        const textAfterRealPost = host.textContent || ''
+
+        root.unmount()
+        window.fetch = origFetch
+
+        return {
+          summaryRequests,
+          leakedTyJerome: textDuringPreLag.includes('Ty Jerome') || textDuringPreLag.includes('25.4'),
+          leakedBoozer: textDuringPreLag.includes('Cameron Boozer') || textDuringPreLag.includes('9.5'),
+          leakedSpencer: textDuringPreLag.includes('Cam Spencer') || textDuringPreLag.includes('5.4'),
+          leakedCleAvg: textDuringPreLag.includes('24.8'),
+          gotRealPost,
+          hasJaMorant31: textAfterRealPost.includes('Ja Morant') && textAfterRealPost.includes('31'),
+        }
+      })()`,
+    })
+
+    const val = evalRes?.result?.value
+    assert.ok(val, 'Browser evaluation must return a value')
+    assert.equal(val.leakedTyJerome, false, 'Mounted post HeroMatchup must NEVER render pre-game Ty Jerome 25.4 as final game total')
+    assert.equal(val.leakedBoozer, false, 'Mounted post HeroMatchup must NEVER render pre-game Cameron Boozer 9.5 as final game total')
+    assert.equal(val.leakedSpencer, false, 'Mounted post HeroMatchup must NEVER render pre-game Cam Spencer 5.4 as final game total')
+    assert.equal(val.leakedCleAvg, false, 'Mounted post HeroMatchup must NEVER render CLE 24.8 PPG as final game total')
+    assert.equal(val.summaryRequests >= 2, true, 'Bounded retry must re-fetch after rejecting lagging pre summary')
+    assert.equal(val.gotRealPost, true, 'Mounted post HeroMatchup must recover once real post summary arrives')
+    assert.equal(val.hasJaMorant31, true, 'Real integer post-game leader (Ja Morant 31) must render once valid post summary arrives')
+  })
+})
+
 

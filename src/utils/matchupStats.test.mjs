@@ -690,3 +690,180 @@ test('P2 Regression: Rank pills are omitted when attached to season totals (poin
   assert.equal(threePtRow?.homeRank, undefined)
 })
 
+test('P1 Follow-Up Regression: extractStatLeaders never renders season-average categories (pointsPerGame/reboundsPerGame/assistsPerGame or decimal averages) as in/post game totals', () => {
+  const memCompNoLeaders = {
+    id: '29',
+    homeAway: 'away',
+    score: '108',
+    team: { id: '29', name: 'Grizzlies', displayName: 'Memphis Grizzlies', abbreviation: 'MEM', color: '5d76a9', logo: '' },
+    leaders: [],
+  }
+
+  const preShapedMemSummary = {
+    teamId: '29',
+    abbreviation: 'MEM',
+    homeAway: 'away',
+    leaders: [
+      {
+        name: 'pointsPerGame',
+        displayName: 'Points Per Game',
+        shortDisplayName: 'PPG',
+        leaders: [{ displayValue: '25.4', value: 25.4, athlete: { id: '4278', fullName: 'Ty Jerome', displayName: 'Ty Jerome', shortName: 'T. Jerome' } }],
+      },
+      {
+        name: 'reboundsPerGame',
+        displayName: 'Rebounds Per Game',
+        shortDisplayName: 'RPG',
+        leaders: [{ displayValue: '9.5', value: 9.5, athlete: { id: '5001', fullName: 'Cameron Boozer', displayName: 'Cameron Boozer', shortName: 'C. Boozer' } }],
+      },
+      {
+        name: 'assistsPerGame',
+        displayName: 'Assists Per Game',
+        shortDisplayName: 'APG',
+        leaders: [{ displayValue: '5.4', value: 5.4, athlete: { id: '5002', fullName: 'Cam Spencer', displayName: 'Cam Spencer', shortName: 'C. Spencer' } }],
+      },
+    ],
+    stats: {},
+    topPlayers: [],
+    injuries: [],
+    lastFiveGames: [],
+  }
+
+  // Post and live modes MUST NOT emit season averages from summary leaders
+  assert.deepEqual(extractStatLeaders(memCompNoLeaders, preShapedMemSummary, 'post'), [])
+  assert.deepEqual(extractStatLeaders(memCompNoLeaders, preShapedMemSummary, 'in'), [])
+
+  // Scoreboard fallback with season-average categories or decimal averages MUST also be rejected in post/in mode
+  const memCompWithPreLeaders = {
+    ...memCompNoLeaders,
+    leaders: [
+      ...preShapedMemSummary.leaders,
+      {
+        // Even if a provider mislabels a decimal average under name: 'points', game totals are integers
+        name: 'points',
+        displayName: 'Points',
+        leaders: [{ displayValue: '25.4', value: 25.4, athlete: { id: '4278', fullName: 'Ty Jerome', displayName: 'Ty Jerome', shortName: 'T. Jerome' } }],
+      },
+    ],
+  }
+  assert.deepEqual(extractStatLeaders(memCompWithPreLeaders, null, 'post'), [])
+  assert.deepEqual(extractStatLeaders(memCompWithPreLeaders, null, 'in'), [])
+
+  // Pre mode still legitimately extracts those per-game season leaders
+  const preLeaders = extractStatLeaders(memCompNoLeaders, preShapedMemSummary, 'pre')
+  assert.equal(preLeaders.length, 3)
+  assert.equal(preLeaders[0].primaryValue, '25.4')
+  assert.equal(preLeaders[0].primaryUnit, 'PPG')
+})
+
+test('P2 Follow-Up Regression: Partial/null player box lines omit unavailable leader subline fragments and render — in Top Box Score Performers while preserving genuine 0 and negative +/-', async () => {
+  const homeComp = {
+    id: '16',
+    homeAway: 'home',
+    score: '112',
+    team: { id: '16', name: 'Timberwolves', displayName: 'Minnesota Timberwolves', abbreviation: 'MIN', color: '0c2340', logo: '' },
+    leaders: [
+      {
+        name: 'points',
+        displayName: 'Points',
+        leaders: [
+          {
+            displayValue: '28',
+            value: 28,
+            athlete: { id: 'p-partial', fullName: 'Anthony Edwards', displayName: 'Anthony Edwards', shortName: 'A. Edwards' },
+          },
+        ],
+      },
+    ],
+  }
+
+  const awayComp = {
+    id: '14',
+    homeAway: 'away',
+    score: '104',
+    team: { id: '14', name: 'Heat', displayName: 'Miami Heat', abbreviation: 'MIA', color: '98002e', logo: '' },
+    leaders: [],
+  }
+
+  const partialHomeSummary = {
+    teamId: '16',
+    abbreviation: 'MIN',
+    homeAway: 'home',
+    leaders: [],
+    stats: {},
+    topPlayers: [
+      {
+        id: 'p-partial',
+        name: 'Anthony Edwards',
+        shortName: 'A. Edwards',
+        min: '36',
+        pts: 28,
+        reb: null,
+        ast: null,
+        fg: null,
+        threePt: null,
+        ft: null,
+        stl: null,
+        blk: null,
+        tov: null,
+        plusMinus: null,
+      },
+      {
+        id: 'p-genuine-zero',
+        name: 'Role Player',
+        shortName: 'R. Player',
+        min: '12',
+        pts: 0,
+        reb: 0,
+        ast: 2,
+        fg: '0-0',
+        threePt: '0-0',
+        ft: '0-0',
+        stl: 0,
+        blk: 0,
+        tov: 0,
+        plusMinus: '-4',
+      },
+    ],
+    injuries: [],
+    lastFiveGames: [],
+  }
+
+  const leaders = extractStatLeaders(homeComp, partialHomeSummary, 'post')
+  assert.equal(leaders.length, 1)
+  assert.equal(leaders[0].subline.includes('0 REB'), false, 'Null REB must not fabricate 0 REB in leader subline')
+  assert.equal(leaders[0].subline.includes('0 AST'), false, 'Null AST must not fabricate 0 AST in leader subline')
+  assert.equal(leaders[0].subline.includes('0-0 FG'), false, 'Null FG must not fabricate 0-0 FG in leader subline')
+  assert.equal(leaders[0].subline.includes('null'), false, 'Null values must never serialize literally into subline')
+
+  // Render <CourtMatchupIntel /> via SSR to check table cells
+  const { createServer } = await import('vite')
+  const React = await import('react')
+  const { renderToStaticMarkup } = await import('react-dom/server')
+  const vite = await createServer({ server: { middlewareMode: true }, appType: 'custom', logLevel: 'silent' })
+  try {
+    const { CourtMatchupIntel } = await vite.ssrLoadModule('/src/components/CourtMatchupIntel.tsx')
+    const html = renderToStaticMarkup(
+      React.createElement(CourtMatchupIntel, {
+        gameState: 'post',
+        awayComp,
+        homeComp,
+        summary: {
+          eventId: '401910888',
+          gameState: 'post',
+          awayTeam: null,
+          homeTeam: partialHomeSummary,
+          shots: [],
+        },
+      })
+    )
+    assert.equal(html.includes('A. Edwards'), true)
+    assert.equal(html.includes('>—<'), true, 'Null box cells must render —')
+    assert.equal(html.includes('0-0'), true, 'Explicit genuine 0-0 FG must still be preserved for Role Player')
+    assert.equal(html.includes('-4'), true, 'Explicit negative +/- must be preserved for Role Player')
+  } finally {
+    await vite.close()
+  }
+})
+
+

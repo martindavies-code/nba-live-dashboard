@@ -123,9 +123,12 @@ export const HeroMatchup: React.FC<HeroMatchupProps> = memo(({
       const baseInterval = hasCustomInterval
         ? summaryRefreshIntervalMs
         : getSummaryCacheTtlMs(state)
-      const delayMs = failed && !hasCustomInterval
-        ? Math.min(baseInterval, 15_000 * Math.pow(2, Math.min(consecutiveFailures, 3)))
-        : baseInterval
+      const delayMs =
+        failed && !hasCustomInterval
+          ? consecutiveFailures <= 5
+            ? Math.min(baseInterval, 15_000 * Math.pow(2, Math.min(consecutiveFailures - 1, 3)))
+            : baseInterval
+          : baseInterval
       refreshTimer = setTimeout(() => {
         if (!active) return
         void runFetch(true)

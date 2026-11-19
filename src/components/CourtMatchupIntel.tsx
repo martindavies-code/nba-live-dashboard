@@ -386,30 +386,59 @@ const TeamScoutingPanel: React.FC<{
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-white/[0.05]">
-                    {topPlayers.slice(0, 4).map((p) => (
-                      <tr key={`${abbr}-box-${p.id}`} className="hover:bg-white/[0.03]">
-                        <td className="py-1.5 pr-1.5 font-sans font-semibold text-slate-100 truncate max-w-[96px] sm:max-w-[125px]">
-                          {p.shortName}
-                        </td>
-                        <td className={`py-1.5 px-1 text-right font-bold tabular-nums whitespace-nowrap ${p.pts >= 20 ? 'text-amber-300' : 'text-white'}`}>
-                          {p.pts}
-                        </td>
-                        <td className="py-1.5 px-1 text-right text-slate-200 tabular-nums whitespace-nowrap">{p.reb}</td>
-                        <td className="py-1.5 px-1 text-right text-slate-200 tabular-nums whitespace-nowrap">{p.ast}</td>
-                        <td className="py-1.5 px-1 text-right text-slate-300 tabular-nums whitespace-nowrap">{p.fg}</td>
-                        <td
-                          className={`py-1.5 pl-1 text-right font-semibold tabular-nums whitespace-nowrap ${
-                            p.plusMinus.startsWith('+')
-                              ? 'text-emerald-300'
-                              : p.plusMinus.startsWith('-')
-                              ? 'text-rose-300'
-                              : 'text-slate-300'
-                          }`}
-                        >
-                          {p.plusMinus}
-                        </td>
-                      </tr>
-                    ))}
+                    {topPlayers.slice(0, 4).map((p) => {
+                      const pm = p.plusMinus
+                      const pmClass =
+                        pm === null
+                          ? 'font-normal text-slate-500'
+                          : pm.startsWith('+')
+                          ? 'font-semibold text-emerald-300'
+                          : pm.startsWith('-')
+                          ? 'font-semibold text-rose-300'
+                          : 'font-semibold text-slate-300'
+                      return (
+                        <tr key={`${abbr}-box-${p.id}`} className="hover:bg-white/[0.03]">
+                          <td className="py-1.5 pr-1.5 font-sans font-semibold text-slate-100 truncate max-w-[96px] sm:max-w-[125px]">
+                            {p.shortName}
+                          </td>
+                          <td
+                            className={`py-1.5 px-1 text-right tabular-nums whitespace-nowrap ${
+                              p.pts === null
+                                ? 'font-normal text-slate-500'
+                                : p.pts >= 20
+                                ? 'font-bold text-amber-300'
+                                : 'font-bold text-white'
+                            }`}
+                          >
+                            {p.pts === null ? '—' : p.pts}
+                          </td>
+                          <td
+                            className={`py-1.5 px-1 text-right tabular-nums whitespace-nowrap ${
+                              p.reb === null ? 'text-slate-500' : 'text-slate-200'
+                            }`}
+                          >
+                            {p.reb === null ? '—' : p.reb}
+                          </td>
+                          <td
+                            className={`py-1.5 px-1 text-right tabular-nums whitespace-nowrap ${
+                              p.ast === null ? 'text-slate-500' : 'text-slate-200'
+                            }`}
+                          >
+                            {p.ast === null ? '—' : p.ast}
+                          </td>
+                          <td
+                            className={`py-1.5 px-1 text-right tabular-nums whitespace-nowrap ${
+                              p.fg === null ? 'text-slate-500' : 'text-slate-300'
+                            }`}
+                          >
+                            {p.fg === null ? '—' : p.fg}
+                          </td>
+                          <td className={`py-1.5 pl-1 text-right tabular-nums whitespace-nowrap ${pmClass}`}>
+                            {pm === null ? '—' : pm}
+                          </td>
+                        </tr>
+                      )
+                    })}
                   </tbody>
                 </table>
               </div>
@@ -448,14 +477,22 @@ export const CourtMatchupIntel: React.FC<CourtMatchupIntelProps> = memo(({
   const awayAbbr = awayComp?.team?.abbreviation || 'AWAY'
   const homeAbbr = homeComp?.team?.abbreviation || 'HOME'
 
-  const validatedAwaySummary = getValidatedTeamSummary(summary?.awayTeam, awayComp)
-  const validatedHomeSummary = getValidatedTeamSummary(summary?.homeTeam, homeComp)
+  const normalizedViewState = gameState === 'in' || gameState === 'post' ? gameState : 'pre'
+  const hasMismatchedSummaryState = Boolean(
+    summary?.gameState &&
+      (summary.gameState === 'in' || summary.gameState === 'post' ? summary.gameState : 'pre') !==
+        normalizedViewState
+  )
+  const stateCompatibleSummary = hasMismatchedSummaryState ? null : summary
+
+  const validatedAwaySummary = getValidatedTeamSummary(stateCompatibleSummary?.awayTeam, awayComp)
+  const validatedHomeSummary = getValidatedTeamSummary(stateCompatibleSummary?.homeTeam, homeComp)
 
   // If summary teams were provided but failed validation against either competitor, reject event-level summary metadata too
   const hasMismatchedSummaryTeam =
-    (Boolean(summary?.awayTeam) && !validatedAwaySummary) ||
-    (Boolean(summary?.homeTeam) && !validatedHomeSummary)
-  const safeSummary = hasMismatchedSummaryTeam ? null : summary
+    (Boolean(stateCompatibleSummary?.awayTeam) && !validatedAwaySummary) ||
+    (Boolean(stateCompatibleSummary?.homeTeam) && !validatedHomeSummary)
+  const safeSummary = hasMismatchedSummaryTeam ? null : stateCompatibleSummary
 
   const { rows, highlights } = extractTeamComparisonRows(
     awayComp,
